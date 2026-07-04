@@ -1,10 +1,16 @@
 {
-  "name":"architect-platform",
-  "private":true,
-  "packageManager":"npm@11.16.0",
-  "scripts":{
-    "dev":"npm --prefix apps/web run dev",
-    "build":"npm --prefix apps/web run build",
-    "lint":"npm --prefix apps/web run lint"
+  "name": "architect-platform",
+  "private": true,
+  "packageManager": "npm@11.16.0",
+  "engines": {
+    "node": "22.x"
+  },
+  "scripts": {
+    "dev": "npm --prefix apps/web run dev",
+    "build": "npm --prefix apps/web run build",
+    "lint": "npm --prefix apps/web run lint"
+  },
+  "devDependencies": {
+    "next": "16.2.9"
   }
 }
