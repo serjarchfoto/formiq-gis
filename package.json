@@ -1,7 +1,7 @@
 {
   "name":"architect-platform",
   "private":true,
-  "packageManager":"pnpm",
+  "packageManager":"npm@11.16.0",
   "scripts":{
     "dev":"npm --prefix apps/web run dev",
     "build":"npm --prefix apps/web run build",
