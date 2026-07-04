@@ -1,0 +1,56 @@
+"use client";
+
+import { useEffect, useRef } from "react";
+import { useProjectStore } from "@/store/project";
+import { useLayers } from "@/store/layers";
+
+export default function ProjectWorkspaceProvider({ children }: { children: React.ReactNode }) {
+  const project = useProjectStore((state) => state.project);
+  const isHydrated = useProjectStore((state) => state.isHydrated);
+  const hydrateProject = useProjectStore((state) => state.hydrateProject);
+  const openProject = useProjectStore((state) => state.openProject);
+  const saveProject = useProjectStore((state) => state.saveProject);
+  const hydrateLayersFromProject = useLayers((state) => state.hydrateFromProject);
+  const didHydrateRef = useRef(false);
+
+  useEffect(() => {
+    if (didHydrateRef.current) {
+      return;
+    }
+
+    didHydrateRef.current = true;
+    const projectId = new URLSearchParams(window.location.search).get("projectId");
+
+    if (projectId) {
+      void openProject(projectId).then((project) => {
+        if (project) {
+          useProjectStore.setState({ isHydrated: true });
+          return;
+        }
+
+        void hydrateProject();
+      });
+      return;
+    }
+
+    void hydrateProject();
+  }, [hydrateProject, openProject]);
+
+  useEffect(() => {
+    hydrateLayersFromProject(project.layerSystem);
+  }, [hydrateLayersFromProject, project.id, project.layerSystem]);
+
+  useEffect(() => {
+    if (!isHydrated) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      void saveProject();
+    }, 600);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [isHydrated, project, saveProject]);
+
+  return children;
+}
