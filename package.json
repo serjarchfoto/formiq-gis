@@ -1,6 +1,9 @@
 {
   "name": "architect-platform",
   "private": true,
+  "workspaces": [
+    "apps/web"
+  ],
   "packageManager": "npm@11.16.0",
   "engines": {
     "node": "22.x"
