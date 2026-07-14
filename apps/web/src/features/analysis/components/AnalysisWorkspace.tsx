@@ -1,36 +1,22 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import type { ReactNode } from "react";
 import Map from "@/components/map";
-import { AnalysisEngine, ThematicMapEngine, type AnalysisResult, type ThematicMapType } from "@/lib";
+import { AnalysisEngine, ThematicMapEngine, type ThematicMapType } from "@/lib";
+import {
+  analysisScenarios,
+  buildAnalysisModel,
+  projectScenario,
+  type MetricItem,
+  type ScenarioModel,
+} from "@/features/analysis/model";
+import { useAnalysisStore } from "@/store/analysis";
 import { useProjectStore } from "@/store/project";
 import { useUIStore } from "@/store/ui";
 
 type AnalysisLayerId = "far" | "gsi" | "density" | "insolation" | "green" | "transport" | "scenarios";
 type ScenarioId = "base" | "compact10" | "compact20" | "optimistic" | "height" | "transit";
-
-interface MetricItem {
-  id: string;
-  label: string;
-  value: string;
-  detail: string;
-  tone: "primary" | "success" | "warning" | "danger" | "neutral";
-  score: number;
-  delta?: string;
-  unit?: string;
-}
-
-interface ScenarioModel {
-  id: ScenarioId;
-  title: string;
-  subtitle: string;
-  densityDelta: number;
-  greenDelta: number;
-  transportDelta: number;
-  floorAreaDelta: number;
-  color: string;
-}
 
 interface AnalysisLayer {
   id: AnalysisLayerId;
@@ -72,68 +58,7 @@ const analysisLayers: AnalysisLayer[] = [
   { id: "scenarios", label: "Сценарии", shortLabel: "Сценарии", icon: "building", mapType: "none" },
 ];
 
-const scenarios: ScenarioModel[] = [
-  {
-    id: "base",
-    title: "Базовый",
-    subtitle: "текущий сценарий",
-    densityDelta: 0,
-    greenDelta: 0,
-    transportDelta: 0,
-    floorAreaDelta: 0,
-    color: "#229ED9",
-  },
-  {
-    id: "compact10",
-    title: "Уплотнение 10%",
-    subtitle: "FAR +10%",
-    densityDelta: 8,
-    greenDelta: -2,
-    transportDelta: 2,
-    floorAreaDelta: 10,
-    color: "#F59E0B",
-  },
-  {
-    id: "compact20",
-    title: "Уплотнение 20%",
-    subtitle: "FAR +20%",
-    densityDelta: 16,
-    greenDelta: -5,
-    transportDelta: 3,
-    floorAreaDelta: 20,
-    color: "#EF4444",
-  },
-  {
-    id: "optimistic",
-    title: "Оптимистичный",
-    subtitle: "баланс показателей",
-    densityDelta: 5,
-    greenDelta: 12,
-    transportDelta: 12,
-    floorAreaDelta: 8,
-    color: "#A855F7",
-  },
-  {
-    id: "height",
-    title: "Высотный сценарий",
-    subtitle: "макс. FAR",
-    densityDelta: 10,
-    greenDelta: -3,
-    transportDelta: 4,
-    floorAreaDelta: 28,
-    color: "#7C3AED",
-  },
-  {
-    id: "transit",
-    title: "Транспорт +",
-    subtitle: "доступность",
-    densityDelta: 4,
-    greenDelta: 3,
-    transportDelta: 24,
-    floorAreaDelta: 6,
-    color: "#22C55E",
-  },
-];
+const scenarios = analysisScenarios;
 
 export default function AnalysisWorkspace() {
   const project = useProjectStore((state) => state.project);
@@ -144,6 +69,7 @@ export default function AnalysisWorkspace() {
   const setActiveScenarioId = useUIStore((state) => state.setActiveScenarioId);
   const setCompareScenarioId = useUIStore((state) => state.setCompareScenarioId);
   const completeWorkflowStage = useUIStore((state) => state.completeWorkflowStage);
+  const hydrateAnalysis = useAnalysisStore((state) => state.hydrate);
   const analysis = useMemo(() => analysisEngine.analyze(project), [project]);
   const model = useMemo(() => buildAnalysisModel(analysis), [analysis]);
   const activeLayer = analysisLayers.find((layer) => layer.id === activeLayerId) ?? analysisLayers[0];
@@ -156,6 +82,10 @@ export default function AnalysisWorkspace() {
     () => thematicMapEngine.generate(activeLayer.mapType, project, analysis),
     [activeLayer.mapType, analysis, project]
   );
+
+  useEffect(() => {
+    hydrateAnalysis(analysis);
+  }, [analysis, hydrateAnalysis]);
 
   return (
     <main className="flex h-full flex-col overflow-hidden bg-[#F8FAFC] text-[#0F172A]">
@@ -660,171 +590,6 @@ function Icon({ name }: { name: IconName }) {
       {paths[name]}
     </svg>
   );
-}
-
-function buildAnalysisModel(analysis: AnalysisResult) {
-  const territoryArea = Math.max(0, analysis.territory.area);
-  const territoryHa = territoryArea / 10_000;
-  const far = territoryArea ? analysis.buildings.totalFloorArea / territoryArea : 0;
-  const gsi = territoryArea ? (analysis.buildings.footprintArea / territoryArea) * 100 : 0;
-  const bcr = gsi;
-  const density = territoryHa ? analysis.buildings.count / territoryHa : 0;
-  const averageFloors = analysis.buildings.averageLevels ?? 0;
-  const roadDensity = territoryHa ? analysis.roads.totalLength / territoryHa : 0;
-  const noiseScore = clamp((roadDensity / 220) * 100, 0, 100);
-  const noiseDb = Math.round(45 + noiseScore * 0.33);
-  const insolationScore = clamp(100 - averageFloors * 5 - gsi * 0.35, 0, 100);
-  const insolationHours = clamp(insolationScore / 18, 1.2, 6.8);
-  const greenPercent = clamp(analysis.vegetation.territoryPercent, 0, 100);
-  const waterPercent = clamp(analysis.water.territoryPercent, 0, 100);
-  const transportScore = clamp(
-    analysis.territory.transitStopCount * 12 + Math.min(60, roadDensity / 45),
-    0,
-    100
-  );
-  const compositeScore = Math.round(
-    clamp((insolationScore + greenPercent + transportScore + (100 - noiseScore)) / 4, 0, 100)
-  );
-
-  const metrics: MetricItem[] = [
-    {
-      id: "far",
-      label: "FAR",
-      value: formatNumber(far),
-      detail: "Средний FAR",
-      tone: far > 2.4 ? "warning" : "primary",
-      score: clamp((far / 3) * 100, 0, 100),
-      delta: "+14%",
-    },
-    {
-      id: "gsi",
-      label: "GSI",
-      value: formatNumber(gsi / 100),
-      detail: "Средний GSI",
-      tone: gsi > 45 ? "warning" : "primary",
-      score: clamp(gsi, 0, 100),
-      delta: "+8%",
-    },
-    {
-      id: "bcr",
-      label: "BCR",
-      value: formatNumber(bcr / 100),
-      detail: "Коэффициент покрытия",
-      tone: bcr > 50 ? "warning" : "neutral",
-      score: clamp(bcr, 0, 100),
-    },
-    {
-      id: "density",
-      label: "Плотность",
-      value: formatNumber(density * 220),
-      detail: "Плотность населения",
-      tone: density > 80 ? "warning" : "neutral",
-      score: clamp((density / 100) * 100, 0, 100),
-      delta: "+12%",
-      unit: "чел/га",
-    },
-    {
-      id: "floors",
-      label: "Средняя этажность",
-      value: averageFloors ? formatNumber(averageFloors) : "-",
-      detail: `${analysis.buildings.count.toLocaleString("ru-RU")} зданий`,
-      tone: averageFloors > 12 ? "warning" : "primary",
-      score: clamp((averageFloors / 20) * 100, 0, 100),
-    },
-    {
-      id: "noise",
-      label: "Шум",
-      value: String(noiseDb),
-      detail: "Шум (день)",
-      tone: noiseScore > 70 ? "danger" : noiseScore > 45 ? "warning" : "success",
-      score: noiseScore,
-      unit: "дБ",
-    },
-    {
-      id: "insolation",
-      label: "Инсоляция",
-      value: formatNumber(insolationHours),
-      detail: "Инсоляция",
-      tone: insolationScore > 65 ? "success" : insolationScore > 40 ? "warning" : "danger",
-      score: insolationScore,
-      unit: "ч",
-    },
-    {
-      id: "green",
-      label: "Озеленение",
-      value: formatPercent(greenPercent),
-      detail: `${formatArea(analysis.vegetation.area)} зеленых территорий`,
-      tone: greenPercent > 25 ? "success" : greenPercent > 12 ? "warning" : "danger",
-      score: greenPercent,
-    },
-    {
-      id: "transport",
-      label: "Транспорт",
-      value: formatNumber(transportScore / 10),
-      detail: "Транспортная доступность",
-      tone: transportScore > 70 ? "success" : transportScore > 40 ? "warning" : "danger",
-      score: transportScore,
-      unit: "/ 10",
-    },
-    {
-      id: "kpi",
-      label: "KPI",
-      value: `${compositeScore}/100`,
-      detail: "сводный индекс среды",
-      tone: compositeScore >= 70 ? "success" : compositeScore >= 45 ? "warning" : "danger",
-      score: compositeScore,
-    },
-    {
-      id: "isochrones",
-      label: "Изохроны",
-      value: `${Math.round(transportScore)}/100`,
-      detail: "5, 10 и 15 минут",
-      tone: transportScore > 70 ? "success" : transportScore > 40 ? "warning" : "danger",
-      score: transportScore,
-    },
-    {
-      id: "charts",
-      label: "Диаграммы",
-      value: formatPercent(greenPercent + waterPercent),
-      detail: "структура территории",
-      tone: "primary",
-      score: clamp(greenPercent + waterPercent, 0, 100),
-    },
-  ];
-
-  return {
-    far,
-    gsi,
-    bcr,
-    density,
-    averageFloors,
-    greenPercent,
-    waterPercent,
-    roadDensity,
-    noiseScore,
-    insolationScore,
-    transportScore: Math.round(transportScore),
-    compositeScore,
-    metrics,
-    metricsById: Object.fromEntries(metrics.map((metric) => [metric.id, metric])) as Record<string, MetricItem>,
-  };
-}
-
-function projectScenario(model: ReturnType<typeof buildAnalysisModel>, scenario: ScenarioModel) {
-  const far = model.far * (1 + scenario.floorAreaDelta / 100);
-  const gsi = clamp(model.gsi + scenario.densityDelta * 0.35, 0, 100);
-  const score = Math.round(
-    clamp(
-      model.compositeScore +
-        scenario.greenDelta * 0.35 +
-        scenario.transportDelta * 0.3 -
-        Math.max(0, scenario.densityDelta) * 0.12,
-      0,
-      100
-    )
-  );
-
-  return { far, gsi, score };
 }
 
 function getToneColor(tone: MetricItem["tone"]): string {
