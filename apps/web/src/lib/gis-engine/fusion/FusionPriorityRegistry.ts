@@ -2,10 +2,10 @@ import type { DataSourceKind } from "@/types/formiq";
 import type { FusionPriorityConfig } from "./types";
 
 const DEFAULT_PRIORITIES: FusionPriorityConfig = {
-  buildingGeometry: ["microsoft-buildings", "overture", "osm"],
-  buildingAddress: ["overture", "osm"],
-  buildingFunction: ["wikidata", "overture", "osm"],
-  poi: ["overture", "osm", "wikidata"],
+  buildingGeometry: ["osm", "microsoft-buildings", "overture", "local-buildings", "city-geojson"],
+  buildingAddress: ["osm", "overture", "city-geojson", "local-buildings"],
+  buildingFunction: ["wikidata", "osm", "overture", "city-geojson", "local-buildings"],
+  poi: ["wikidata", "overture", "city-geojson", "osm"],
 };
 
 export class FusionPriorityRegistry {

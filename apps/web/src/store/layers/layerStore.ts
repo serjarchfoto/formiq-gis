@@ -2,8 +2,11 @@
 
 import { create } from "zustand";
 import { DEFAULT_OSM_LAYER_STYLES } from "@/constants/gis";
+import { SpatialImportPipeline, type SpatialImportFormat } from "@/features/import/spatial-import";
+import { createPMTilesFileSource } from "@/lib/gis-engine/pmtiles";
 import { useProjectStore } from "@/store/project";
-import type { Feature, FeatureCollection, GeoJsonProperties, Geometry } from "geojson";
+import { useMapStore } from "@/store/map";
+import type { FeatureCollection, GeoJsonProperties, Geometry } from "geojson";
 import type { GISImportFormat, GISLayer, GISLayerCategory, GISLayerGeometryType } from "@/types/gis";
 import type { ProjectLayerState } from "@/types/formiq";
 
@@ -24,6 +27,7 @@ interface LayersStore {
   hydrateFromProject: (layers: ProjectLayerState[]) => void;
   toggleLayer: (id: string) => void;
   setLayerOpacity: (id: string, value: number) => void;
+  toggleLayerLock: (id: string) => void;
   addLayer: (fileOrData: AddLayerInput) => Promise<LayerItem>;
   upsertLayers: (layers: LayerItem[]) => void;
   removeLayer: (id: string) => void;
@@ -55,7 +59,7 @@ export const useLayers = create<LayersStore>((set, get) => ({
 
   setLayerOpacity: (id, value) =>
     setAndPersist(set, get().layers.map((layer) =>
-      layer.id === id
+      layer.id === id && !layer.locked
         ? {
             ...layer,
             opacity: value,
@@ -67,13 +71,18 @@ export const useLayers = create<LayersStore>((set, get) => ({
         : layer
     )),
 
+  toggleLayerLock: (id) =>
+    setAndPersist(set, get().layers.map((layer) =>
+      layer.id === id ? { ...layer, locked: !layer.locked } : layer
+    )),
+
   addLayer: async (fileOrData) => {
-    const layer = await createLayerFromInput(fileOrData, get().layers.length);
-    const nextLayers = normalizeLayerOrder([...get().layers, layer]);
+    const layers = await createLayersFromInput(fileOrData, get().layers.length);
+    const nextLayers = normalizeLayerOrder([...get().layers, ...layers]);
 
     setAndPersist(set, nextLayers);
 
-    return layer;
+    return layers[0];
   },
 
   upsertLayers: (layers) => {
@@ -106,8 +115,12 @@ export const useLayers = create<LayersStore>((set, get) => ({
   removeLayer: (id) => {
     const layer = get().layers.find((item) => item.id === id);
 
-    if (!layer?.removable) {
+    if (!layer?.removable || layer.locked) {
       return;
+    }
+
+    if (layer.sourceType === "pmtiles") {
+      useMapStore.getState().removePMTilesSource(layer.source.id);
     }
 
     setAndPersist(set, normalizeLayerOrder(get().layers.filter((item) => item.id !== id)));
@@ -118,7 +131,7 @@ export const useLayers = create<LayersStore>((set, get) => ({
     const index = layers.findIndex((layer) => layer.id === id);
     const nextIndex = index + direction;
 
-    if (index < 0 || nextIndex < 0 || nextIndex >= layers.length) {
+    if (index < 0 || nextIndex < 0 || nextIndex >= layers.length || layers[index]?.locked) {
       return;
     }
 
@@ -151,6 +164,8 @@ function normalizeLayer(layer: ProjectLayerState | LayerItem, index: number): La
   return {
     ...layer,
     opacity,
+    groupId: layer.groupId ?? getDefaultLayerGroup(layer),
+    locked: layer.locked ?? !layer.removable,
     sourceType: layer.sourceType ?? (layer.source.format === "osm" ? "osm" : layer.source.format),
     removable: layer.removable ?? false,
     order: layer.order ?? index,
@@ -167,22 +182,55 @@ function normalizeLayerOrder(layers: LayerItem[]): LayerItem[] {
     .sort((left, right) => left.order - right.order);
 }
 
-async function createLayerFromInput(input: AddLayerInput, order: number): Promise<LayerItem> {
+async function createLayersFromInput(input: AddLayerInput, order: number): Promise<LayerItem[]> {
   if (isGISLayer(input)) {
-    return normalizeLayer({ ...input, removable: input.removable ?? true }, order);
+    return [normalizeLayer({ ...input, removable: input.removable ?? true }, order)];
   }
 
   if (isFileInput(input)) {
-    const data = await parseLayerFile(input);
+    if (isPMTilesFile(input)) {
+      return [createPMTilesLayer(input, order)];
+    }
 
-    return createCustomLayer(input.name.replace(/\.[^.]+$/, ""), data, getFileSourceType(input), order);
+    return parseLayerFile(input, order);
   }
 
   if (isFeatureCollectionInput(input)) {
-    return createCustomLayer("Imported layer", input, "manual", order);
+    return [createCustomLayer("Imported layer", input, "manual", order)];
   }
 
-  return createCustomLayer(input.name, input.data, input.sourceType ?? "manual", order);
+  return [createCustomLayer(input.name, input.data, input.sourceType ?? "manual", order)];
+}
+
+function createPMTilesLayer(file: File, order: number): LayerItem {
+  const id = createLayerId();
+  const name = file.name.replace(/\.[^.]+$/, "");
+  const source = createPMTilesFileSource(id, file, name);
+
+  useMapStore.getState().addPMTilesSource(source);
+
+  return {
+    id,
+    name,
+    visible: true,
+    opacity: 0.85,
+    sourceType: "pmtiles",
+    removable: true,
+    order,
+    category: "custom",
+    geometryType: "polygon",
+    source: {
+      id,
+      name,
+      format: "pmtiles",
+    },
+    style: {
+      fillColor: "#229ED9",
+      lineColor: "#1D8CC2",
+      lineWidth: 1.5,
+      opacity: 0.85,
+    },
+  };
 }
 
 function createCustomLayer(
@@ -216,110 +264,42 @@ function createCustomLayer(
   };
 }
 
-async function parseLayerFile(file: File): Promise<FeatureCollection<Geometry, GeoJsonProperties>> {
+async function parseLayerFile(file: File, order: number): Promise<LayerItem[]> {
   const sourceType = getFileSourceType(file);
-  const text = await readFileAsText(file);
-
-  if (sourceType === "geojson") {
-    return normalizeGeoJson(JSON.parse(text));
-  }
-
-  if (sourceType === "kml") {
-    return parseXmlLayer(text, "kml");
-  }
-
-  if (sourceType === "gpx") {
-    return parseXmlLayer(text, "gpx");
-  }
-
-  throw new Error("Unsupported layer format");
-}
-
-function normalizeGeoJson(value: unknown): FeatureCollection<Geometry, GeoJsonProperties> {
-  if (!value || typeof value !== "object") {
-    throw new Error("Invalid GeoJSON");
-  }
-
-  const geojson = value as FeatureCollection<Geometry, GeoJsonProperties> | Feature<Geometry, GeoJsonProperties>;
-
-  if (geojson.type === "FeatureCollection") {
-    return geojson;
-  }
-
-  if (geojson.type === "Feature") {
-    return {
-      type: "FeatureCollection",
-      features: [geojson],
-    };
-  }
-
-  throw new Error("GeoJSON must be a FeatureCollection or Feature");
-}
-
-function parseXmlLayer(
-  text: string,
-  sourceType: Extract<GISImportFormat, "kml" | "gpx">
-): FeatureCollection<Geometry, GeoJsonProperties> {
-  const document = new DOMParser().parseFromString(text, "application/xml");
-
-  if (sourceType === "gpx") {
-    const points = Array.from(document.querySelectorAll("wpt, trkpt, rtept")).map((point) =>
-      pointFeature(Number(point.getAttribute("lon")), Number(point.getAttribute("lat")))
-    );
-
-    return {
-      type: "FeatureCollection",
-      features: points,
-    };
-  }
-
-  const placemarks = Array.from(document.querySelectorAll("Placemark"));
-  const features = placemarks
-    .map((placemark) => {
-      const coordinateText = placemark.querySelector("coordinates")?.textContent?.trim();
-
-      if (!coordinateText) {
-        return null;
-      }
-
-      const coordinates = coordinateText
-        .split(/\s+/)
-        .map((item) => item.split(",").map(Number))
-        .map(([longitude, latitude]) => [longitude, latitude] as [number, number])
-        .filter(([longitude, latitude]) => Number.isFinite(longitude) && Number.isFinite(latitude));
-
-      if (coordinates.length === 1) {
-        return pointFeature(coordinates[0][0], coordinates[0][1]);
-      }
-
-      const isPolygon = Boolean(placemark.querySelector("Polygon"));
-
-      return {
-        type: "Feature" as const,
-        properties: {},
-        geometry: {
-          type: isPolygon ? "Polygon" as const : "LineString" as const,
-          coordinates: isPolygon ? [coordinates] : coordinates,
-        },
-      };
-    })
-    .filter((feature): feature is Feature<Geometry, GeoJsonProperties> => Boolean(feature));
-
-  return {
-    type: "FeatureCollection",
-    features,
-  };
-}
-
-function pointFeature(longitude: number, latitude: number): Feature<Geometry, GeoJsonProperties> {
-  return {
-    type: "Feature",
-    properties: {},
-    geometry: {
-      type: "Point",
-      coordinates: [longitude, latitude],
+  const binaryFormats: GISImportFormat[] = ["shapefile", "geopackage"];
+  const payload = binaryFormats.includes(sourceType)
+    ? await file.arrayBuffer()
+    : await readFileAsText(file);
+  const result = await new SpatialImportPipeline().run([
+    {
+      id: createLayerId(),
+      name: file.name.replace(/\.[^.]+$/, ""),
+      fileName: file.name,
+      format: sourceType as SpatialImportFormat,
+      payload,
+      options: {
+        layerName: file.name.replace(/\.[^.]+$/, ""),
+      },
     },
-  };
+  ]);
+
+  const errors = result.datasets.flatMap((dataset) => dataset.metadata.messages);
+
+  if (!result.layers.length) {
+    throw new Error(errors[0] ?? "Unsupported layer format");
+  }
+
+  return result.layers.map((layer, index) =>
+    normalizeLayer(
+      {
+        ...layer,
+        order: order + index,
+        groupId: getDefaultLayerGroup(layer),
+        locked: false,
+      },
+      order + index
+    )
+  );
 }
 
 function readFileAsText(file: File): Promise<string> {
@@ -337,9 +317,16 @@ function getFileSourceType(file: File): GISImportFormat {
   if (extension === "geojson" || extension === "json") return "geojson";
   if (extension === "kml") return "kml";
   if (extension === "gpx") return "gpx";
+  if (extension === "csv") return "csv";
+  if (extension === "dxf") return "dxf";
+  if (extension === "gpkg" || extension === "geopackage") return "geopackage";
   if (extension === "zip" || extension === "shp") return "shapefile";
 
   return "geojson";
+}
+
+function isPMTilesFile(file: File): boolean {
+  return file.name.toLowerCase().endsWith(".pmtiles");
 }
 
 function detectGeometryType(data: FeatureCollection<Geometry, GeoJsonProperties>): GISLayerGeometryType {
@@ -364,6 +351,8 @@ function createDefaultLayer(
     name,
     visible: true,
     opacity: style.opacity ?? 1,
+    groupId: "base",
+    locked: true,
     sourceType: "osm",
     removable: false,
     order,
@@ -376,6 +365,12 @@ function createDefaultLayer(
     },
     style,
   };
+}
+
+function getDefaultLayerGroup(layer: Pick<GISLayer, "category" | "sourceType">): string {
+  if (layer.sourceType === "osm" || layer.sourceType === "fusion") return "base";
+  if (layer.category === "custom") return "imports";
+  return layer.category;
 }
 
 function createLayerId(): string {

@@ -3,6 +3,7 @@
 import { ContextPanel } from "@/components/layout";
 import { getCachedAnalysisResult } from "@/lib";
 import { useProjectStore } from "@/store/project";
+import ThreeDPanel from "./ThreeDPanel";
 
 export default function WorkspaceContextPanel() {
   const mode = useProjectStore((state) => state.project.settings.display.workspaceMode);
@@ -38,17 +39,7 @@ export default function WorkspaceContextPanel() {
   }
 
   if (mode === "3d") {
-    return (
-      <Panel title="3D инструменты">
-        <Metric label="Pitch" value="60°" />
-        <Metric label="Bearing" value="0°" />
-        <Metric label="White Model" value={project.whiteModel.status === "generated" ? "готово" : "черновик"} />
-        <Metric label="Semantic 3D" value={project.semantic3D.status === "generated" ? "готово" : "не создан"} />
-        <div className="rounded-2xl border border-[#E5E7EB] bg-[#F8FAFC] p-4 text-xs text-[#64748B]">
-          Карта остаётся MapLibre, но переводится в изометрию. Полноценная Three.js-сцена подключается следующим этапом.
-        </div>
-      </Panel>
-    );
+    return <ThreeDPanel />;
   }
 
   return <ContextPanel />;
@@ -78,13 +69,13 @@ function Metric({ label, value }: { label: string; value: string }) {
 function LegendHint() {
   return (
     <div className="rounded-2xl border border-[#E5E7EB] bg-[#F8FAFC] p-4 text-xs text-[#64748B]">
-      Легенда берётся из активной тематической карты и обновляется при смене анализа.
+      Легенда берется из активной тематической карты и обновляется при смене анализа.
     </div>
   );
 }
 
 function formatStatus(status: string): string {
-  if (status === "running") return "расчёт";
+  if (status === "running") return "расчет";
   if (status === "complete") return "готово";
   if (status === "error") return "ошибка";
   return "ожидание";

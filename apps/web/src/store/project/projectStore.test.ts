@@ -28,6 +28,11 @@ describe("projectStore", () => {
     expect(project.description).toBe("Site analysis");
     expect(project.city).toBe("Moscow");
     expect(project.author).toBe("Architect");
+    expect(project.tags).toEqual([]);
+    expect(project.isArchived).toBe(false);
+    expect(project.isPinned).toBe(false);
+    expect(project.isFavorite).toBe(false);
+    expect(project.lastOpenedAt).toBeNull();
     expect(project.crs).toBe("WGS84");
     expect(project.units).toBe("m");
     expect(Date.parse(project.metadata.createdAt)).not.toBeNaN();
@@ -84,6 +89,40 @@ describe("projectStore", () => {
     expect(useProjectStore.getState().getProjects()).toHaveLength(2);
   });
 
+  it("updates project management flags", async () => {
+    const project = await useProjectStore.getState().createProject({
+      name: "Pinned",
+      city: "Moscow",
+    });
+
+    await useProjectStore.getState().setProjectPinned(project.id, true);
+    await useProjectStore.getState().setProjectFavorite(project.id, true);
+    await useProjectStore.getState().setProjectArchived(project.id, true);
+
+    const updatedProject = useProjectStore.getState().getById(project.id);
+
+    expect(updatedProject?.isPinned).toBe(true);
+    expect(updatedProject?.isFavorite).toBe(true);
+    expect(updatedProject?.isArchived).toBe(true);
+  });
+
+  it("imports a .formiq project without overwriting an existing id", async () => {
+    const project = await useProjectStore.getState().createProject({
+      name: "Imported source",
+      tags: ["city", "concept"],
+    });
+
+    const importedProject = await useProjectStore.getState().importProject({
+      project,
+    });
+
+    expect(importedProject?.id).toBeTruthy();
+    expect(importedProject?.id).not.toBe(project.id);
+    expect(importedProject?.name).toBe("Imported source (импорт)");
+    expect(importedProject?.tags).toEqual(["city", "concept"]);
+    expect(useProjectStore.getState().getProjects()).toHaveLength(2);
+  });
+
   it("deletes a project from the project list", async () => {
     const project = await useProjectStore.getState().createProject({
       name: "To delete",
@@ -93,5 +132,84 @@ describe("projectStore", () => {
 
     expect(useProjectStore.getState().getById(project.id)).toBeNull();
     expect(useProjectStore.getState().getProjects()).toEqual([]);
+  });
+
+  it("updates the active territory in place and refreshes bounds", async () => {
+    await useProjectStore.getState().createProject({
+      name: "Territory update",
+    });
+
+    const initialSelection = {
+      shape: "rectangle" as const,
+      bounds: {
+        west: 37.6,
+        south: 55.7,
+        east: 37.7,
+        north: 55.8,
+      },
+      geometry: {
+        type: "Feature" as const,
+        properties: { source: "test" },
+        geometry: {
+          type: "Polygon" as const,
+          coordinates: [
+            [
+              [37.6, 55.7],
+              [37.7, 55.7],
+              [37.7, 55.8],
+              [37.6, 55.8],
+              [37.6, 55.7],
+            ],
+          ],
+        },
+      },
+    };
+
+    useProjectStore.getState().createTerritoryFromSelection(initialSelection);
+
+    const territoryId = useProjectStore.getState().project.activeTerritoryId;
+    const originalTerritory = useProjectStore.getState().project.territories[0];
+
+    expect(territoryId).toBeTruthy();
+    expect(originalTerritory?.shape).toBe("rectangle");
+
+    const updatedSelection = {
+      shape: "polygon" as const,
+      bounds: {
+        west: 37.61,
+        south: 55.705,
+        east: 37.74,
+        north: 55.83,
+      },
+      geometry: {
+        type: "Feature" as const,
+        properties: { source: "test" },
+        geometry: {
+          type: "Polygon" as const,
+          coordinates: [
+            [
+              [37.61, 55.705],
+              [37.74, 55.71],
+              [37.73, 55.83],
+              [37.62, 55.82],
+              [37.61, 55.705],
+            ],
+          ],
+        },
+      },
+    };
+
+    useProjectStore.getState().updateTerritoryFromSelection(updatedSelection);
+
+    const updatedTerritory = useProjectStore.getState().project.territories[0];
+
+    expect(updatedTerritory?.id).toBe(territoryId);
+    expect(updatedTerritory?.shape).toBe("polygon");
+    expect(updatedTerritory?.bounds).toEqual(updatedSelection.bounds);
+    expect(updatedTerritory?.geometry.geometry.coordinates).toEqual(
+      updatedSelection.geometry.geometry.coordinates
+    );
+    expect(updatedTerritory?.loadingBuffer.bounds).toBeDefined();
+    expect(useProjectStore.getState().project.metadata.bounds).toEqual(updatedSelection.bounds);
   });
 });

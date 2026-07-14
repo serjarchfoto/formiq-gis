@@ -1,9 +1,18 @@
 import type { FeatureCollection, GeoJsonProperties, Geometry } from "geojson";
 import type { FormiqLayerData } from "@/types/formiq";
 
-export type GISImportFormat = "geojson" | "shapefile" | "kml" | "gpx" | "csv" | "dxf";
+export type GISImportFormat =
+  | "geojson"
+  | "shapefile"
+  | "geopackage"
+  | "kml"
+  | "gpx"
+  | "csv"
+  | "dxf"
+  | "geotiff"
+  | "geoparquet";
 
-export type RasterSourceType = "dem" | "satellite";
+export type RasterSourceType = "dem" | "raster-dem" | "satellite";
 
 export type GISLayerGeometryType = "point" | "line" | "polygon";
 
@@ -39,7 +48,10 @@ export interface GISDataSource {
     | "osm"
     | "overture"
     | "microsoft-buildings"
-    | "wikidata";
+    | "local-buildings"
+    | "city-geojson"
+    | "wikidata"
+    | "pmtiles";
 }
 
 export interface GISLayerStyle {
@@ -54,7 +66,9 @@ export interface GISLayer {
   name: string;
   visible: boolean;
   opacity: number;
-  sourceType: GISImportFormat | RasterSourceType | "osm" | "fusion" | "manual";
+  groupId?: string;
+  locked?: boolean;
+  sourceType: GISImportFormat | RasterSourceType | "osm" | "fusion" | "manual" | "pmtiles";
   removable: boolean;
   order: number;
   category: GISLayerCategory;

@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { useProjectStore } from "@/store/project";
 import { useLayers } from "@/store/layers";
+import { useSelectionStore } from "@/store/selection";
 
 export default function ProjectWorkspaceProvider({ children }: { children: React.ReactNode }) {
   const project = useProjectStore((state) => state.project);
@@ -11,6 +12,7 @@ export default function ProjectWorkspaceProvider({ children }: { children: React
   const openProject = useProjectStore((state) => state.openProject);
   const saveProject = useProjectStore((state) => state.saveProject);
   const hydrateLayersFromProject = useLayers((state) => state.hydrateFromProject);
+  const syncSelectionFromProject = useSelectionStore((state) => state.syncSelectionFromProject);
   const didHydrateRef = useRef(false);
 
   useEffect(() => {
@@ -39,6 +41,13 @@ export default function ProjectWorkspaceProvider({ children }: { children: React
   useEffect(() => {
     hydrateLayersFromProject(project.layerSystem);
   }, [hydrateLayersFromProject, project.id, project.layerSystem]);
+
+  useEffect(() => {
+    const activeTerritory =
+      project.territories.find((territory) => territory.id === project.activeTerritoryId) ?? null;
+
+    syncSelectionFromProject(activeTerritory);
+  }, [project.activeTerritoryId, project.territories, syncSelectionFromProject]);
 
   useEffect(() => {
     if (!isHydrated) {

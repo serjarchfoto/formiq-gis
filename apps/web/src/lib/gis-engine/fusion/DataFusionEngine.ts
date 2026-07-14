@@ -29,12 +29,14 @@ import type {
   SourceFeature,
   SourcePoiFeature,
   SourceRoadFeature,
+  SourceTerrainFeature,
   SourceVegetationFeature,
   SourceWaterFeature,
 } from "./types";
 import {
   createUnknownBuildingSemantic,
   createUnknownRoadSemantic,
+  createUnknownTerrainSemantic,
   createUnknownVegetationSemantic,
   createUnknownWaterSemantic,
   toLineGeometry,
@@ -67,7 +69,7 @@ export class DataFusionEngine {
     const roads = this.mergeRoads(sourceResults);
     const vegetation = this.mergeVegetation(sourceResults);
     const water = this.mergeWater(sourceResults);
-    const terrain: FormiqTerrain[] = [];
+    const terrain = this.mergeTerrain(sourceResults);
     const boundaries = this.mergeBoundaries(sourceResults);
     const poi = this.mergePoi(sourceResults);
     const transitStops = this.mergeTransitStops();
@@ -360,6 +362,72 @@ export class DataFusionEngine {
     return water;
   }
 
+  private mergeTerrain(results: SourceAdapterResult[]): FormiqTerrain[] {
+    const terrain = results
+      .flatMap((result) =>
+        result.features.filter((feature): feature is SourceTerrainFeature => feature.kind === "terrain")
+      )
+      .map((candidate, index) => {
+        const geometry = toPointGeometry(candidate.geometry);
+
+        if (!geometry) {
+          return null;
+        }
+
+        return {
+          id: `terrain-${index}-${candidate.sourceFeatureId}`,
+          type: "terrain" as const,
+          geometry,
+          elevation: typeof candidate.elevation === "number" ? candidate.elevation : null,
+          slope: typeof candidate.slope === "number" ? candidate.slope : null,
+          semantic: createUnknownTerrainSemantic(),
+          tags: candidate.tags,
+          names: candidate.names,
+          source: candidate.source,
+          confidence: getSourceConfidence(candidate.source),
+          lifecycleState: "active" as const,
+          provenance: buildFeatureProvenance([candidate], candidate.source, {
+            elevation: buildAttributeProvenance([candidate], "elevation"),
+            slope: buildAttributeProvenance([candidate], "slope"),
+          }),
+        };
+      })
+      .filter(isPresent);
+
+    const elevations = terrain
+      .map((item) => item.elevation)
+      .filter((value): value is number => typeof value === "number");
+
+    if (elevations.length === 0) {
+      return terrain;
+    }
+
+    const min = Math.min(...elevations);
+    const max = Math.max(...elevations);
+    const span = Math.max(max - min, 1);
+    const lowThreshold = min + span / 3;
+    const highThreshold = min + (span * 2) / 3;
+
+    return terrain.map((item) => {
+      if (typeof item.elevation !== "number") {
+        return item;
+      }
+
+      return {
+        ...item,
+        semantic: {
+          ...item.semantic,
+          elevationCategory:
+            item.elevation <= lowThreshold
+              ? "low"
+              : item.elevation <= highThreshold
+                ? "medium"
+                : "high",
+        },
+      };
+    });
+  }
+
   private mergeBoundaries(results: SourceAdapterResult[]): FormiqBoundary[] {
     const boundaries = results
       .flatMap((result) => result.features.filter((feature) => feature.kind === "boundary"))
@@ -583,6 +651,23 @@ function createLayersFromCollections(
         featureCount: collections.water.length,
       },
     }),
+    createLayer("terrain", "Рельеф", "point", DEFAULT_OSM_LAYER_STYLES.terrain, {
+      category: "terrain",
+      buildings: [],
+      roads: [],
+      vegetation: [],
+      water: [],
+      terrain: collections.terrain,
+      boundaries: [],
+      poi: [],
+      transitStops: [],
+      metadata: {
+        source: "Data Fusion Engine",
+        importedAt: new Date().toISOString(),
+        bounds,
+        featureCount: collections.terrain.length,
+      },
+    }),
     createLayer("boundaries", "Границы", "polygon", DEFAULT_OSM_LAYER_STYLES.boundaries, {
       category: "boundaries",
       buildings: [],
@@ -638,7 +723,7 @@ function createLayersFromCollections(
 }
 
 function createLayer(
-  id: "buildings" | "roads" | "green" | "water" | "boundaries" | "poi" | "transit",
+  id: "buildings" | "roads" | "green" | "water" | "terrain" | "boundaries" | "poi" | "transit",
   name: string,
   geometryType: GISLayer["geometryType"],
   style: GISLayer["style"],
@@ -665,16 +750,17 @@ function createLayer(
 }
 
 function getFusionLayerOrder(
-  id: "buildings" | "roads" | "green" | "water" | "boundaries" | "poi" | "transit"
+  id: "buildings" | "roads" | "green" | "water" | "terrain" | "boundaries" | "poi" | "transit"
 ): number {
   const order: Record<typeof id, number> = {
     buildings: 0,
     roads: 1,
     green: 2,
     water: 3,
-    boundaries: 4,
-    poi: 5,
-    transit: 6,
+    terrain: 4,
+    boundaries: 5,
+    poi: 6,
+    transit: 7,
   };
 
   return order[id];
@@ -686,7 +772,7 @@ function toProjectDataSource(state: ReturnType<SourceManager["getStates"]>[numbe
     name: state.source,
     kind: state.source,
     connectedAt: state.updatedAt ?? new Date().toISOString(),
-    status: state.status === "error" ? "error" : "active",
+    status: state.status === "error" ? "error" : state.status === "ready" ? "active" : "inactive",
     version: state.version,
     cacheKey: `${state.source}:${state.version}`,
     featureCount: state.featureCount,
@@ -751,7 +837,12 @@ function buildFeatureProvenance(
 }
 
 function buildAttributeProvenance<
-  T extends SourceBuildingFeature | SourceRoadFeature | SourceVegetationFeature | SourceWaterFeature
+  T extends
+    | SourceBuildingFeature
+    | SourceRoadFeature
+    | SourceVegetationFeature
+    | SourceWaterFeature
+    | SourceTerrainFeature
 >(features: T[], key: keyof T): AttributeProvenance[] {
   const timestamp = new Date().toISOString();
 
@@ -936,11 +1027,11 @@ function normalizeRoadType(value: string | null | undefined): FormiqRoad["roadTy
 }
 
 function getSourceConfidence(source: DataSourceKind): DataConfidence {
-  if (source === "microsoft-buildings" || source === "wikidata") {
+  if (source === "microsoft-buildings" || source === "wikidata" || source === "local-buildings") {
     return "high";
   }
 
-  if (source === "overture") {
+  if (source === "overture" || source === "city-geojson") {
     return "medium";
   }
 

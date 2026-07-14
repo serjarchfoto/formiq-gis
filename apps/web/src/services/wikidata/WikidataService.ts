@@ -1,3 +1,4 @@
+import type { FeatureCollection, Point } from "geojson";
 import type { BoundingBox } from "@/types/gis";
 
 export interface WikidataEntity {
@@ -12,78 +13,57 @@ export interface WikidataEntity {
   tags: Record<string, string>;
 }
 
-const WIKIDATA_ENDPOINT = "https://query.wikidata.org/sparql";
-
 export class WikidataService {
-  async loadByBoundingBox(bounds: BoundingBox): Promise<WikidataEntity[]> {
-    const query = `
-      SELECT ?item ?itemLabel ?itemDescription ?coord ?article WHERE {
-        SERVICE wikibase:box {
-          ?item wdt:P625 ?coord .
-          bd:serviceParam wikibase:cornerWest "Point(${bounds.west} ${bounds.south})"^^geo:wktLiteral .
-          bd:serviceParam wikibase:cornerEast "Point(${bounds.east} ${bounds.north})"^^geo:wktLiteral .
-        }
-        OPTIONAL {
-          ?article schema:about ?item ;
-                   schema:isPartOf <https://en.wikipedia.org/> .
-        }
-        SERVICE wikibase:label { bd:serviceParam wikibase:language "en,ru". }
-      }
-      LIMIT 500
-    `;
+  constructor(
+    private readonly endpoint =
+      process.env.NEXT_PUBLIC_WIKIDATA_API_URL || "/api/data/wikidata"
+  ) {}
 
-    const response = await fetch(WIKIDATA_ENDPOINT, {
+  async loadByBoundingBox(bounds: BoundingBox): Promise<WikidataEntity[]> {
+    const url = `${this.endpoint}?bbox=${encodeURIComponent(formatBbox(bounds))}`;
+    const response = await fetch(url, {
       headers: {
-        Accept: "application/sparql-results+json",
+        Accept: "application/geo+json, application/json",
       },
-      method: "POST",
-      body: new URLSearchParams({ query }),
+      cache: "no-store",
     });
 
     if (!response.ok) {
       throw new Error(`Wikidata request failed with status ${response.status}.`);
     }
 
-    const payload = (await response.json()) as WikidataResponse;
+    const payload = (await response.json()) as WikidataProxyResponse;
 
-    return payload.results.bindings.map((row) => ({
-      id: row.item.value,
-      label: row.itemLabel?.value ?? null,
-      description: row.itemDescription?.value ?? null,
-      wikipedia: row.article?.value ?? null,
-      coordinates: parsePoint(row.coord?.value),
-      tags: {},
+    return payload.features.map((feature) => ({
+      id: String(feature.id ?? feature.properties?.wikidataId ?? ""),
+      label: toNullableString(feature.properties?.name),
+      description: toNullableString(feature.properties?.description),
+      wikipedia: toNullableString(feature.properties?.wikipedia),
+      coordinates: {
+        longitude: feature.geometry.coordinates[0],
+        latitude: feature.geometry.coordinates[1],
+      },
+      tags: {
+        wikidata: String(feature.properties?.wikidataId ?? feature.id ?? ""),
+      },
     }));
   }
 }
 
-interface WikidataBinding {
-  item: { value: string };
-  itemLabel?: { value: string };
-  itemDescription?: { value: string };
-  coord?: { value: string };
-  article?: { value: string };
+type WikidataProxyResponse = FeatureCollection<
+  Point,
+  {
+    wikidataId?: unknown;
+    name?: unknown;
+    description?: unknown;
+    wikipedia?: unknown;
+  }
+>;
+
+function formatBbox(bounds: BoundingBox): string {
+  return [bounds.west, bounds.south, bounds.east, bounds.north].join(",");
 }
 
-interface WikidataResponse {
-  results: {
-    bindings: WikidataBinding[];
-  };
-}
-
-function parsePoint(value: string | undefined): { latitude: number; longitude: number } | null {
-  if (!value) {
-    return null;
-  }
-
-  const match = value.match(/Point\(([-\d.]+) ([-\d.]+)\)/);
-
-  if (!match) {
-    return null;
-  }
-
-  return {
-    longitude: Number.parseFloat(match[1]),
-    latitude: Number.parseFloat(match[2]),
-  };
+function toNullableString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
 }

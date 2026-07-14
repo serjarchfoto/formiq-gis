@@ -3,6 +3,7 @@ import type { GISImportFormat, RasterSourceType } from "@/types/gis";
 export const SUPPORTED_VECTOR_FORMATS: GISImportFormat[] = [
   "geojson",
   "shapefile",
+  "geopackage",
   "kml",
   "gpx",
   "csv",
@@ -34,6 +35,11 @@ export const DEFAULT_OSM_LAYER_STYLES = {
     fillColor: "#38BDF8",
     lineColor: "#0284C7",
     opacity: 0.45,
+  },
+  terrain: {
+    fillColor: "#A3A3A3",
+    lineColor: "#525252",
+    opacity: 0.72,
   },
   boundaries: {
     fillColor: "#64748B",

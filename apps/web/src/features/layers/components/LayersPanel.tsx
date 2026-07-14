@@ -1,42 +1,56 @@
 "use client";
 
-import { ChangeEvent, FormEvent, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
+import type { ChangeEvent, FormEvent, ReactNode } from "react";
 import { CartographicStyleEngine, ThematicMapEngine, type ThematicMapType } from "@/lib";
 import { useLayers } from "@/store/layers";
 import { useProjectStore } from "@/store/project";
 import { useUIStore } from "@/store/ui";
 import type { CartographicThemeId, RoadWidthMode } from "@/types/formiq";
+import type { GISLayer } from "@/types/gis";
 
 const text = {
-  layers: "\u0421\u043b\u043e\u0438",
-  addLayer: "\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u0441\u043b\u043e\u0439",
-  importLayer: "\u0418\u043c\u043f\u043e\u0440\u0442 \u0441\u043b\u043e\u044f",
-  chooseFile: "\u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 GeoJSON, KML, GPX \u0438\u043b\u0438 Shapefile",
-  cancel: "\u041e\u0442\u043c\u0435\u043d\u0430",
-  import: "\u0418\u043c\u043f\u043e\u0440\u0442",
-  visible: "\u0412\u0438\u0434\u0438\u043c\u043e\u0441\u0442\u044c",
-  opacity: "\u041f\u0440\u043e\u0437\u0440\u0430\u0447\u043d\u043e\u0441\u0442\u044c",
-  up: "\u0412\u044b\u0448\u0435",
-  down: "\u041d\u0438\u0436\u0435",
-  remove: "\u0423\u0434\u0430\u043b\u0438\u0442\u044c",
-  locked: "\u0421\u0438\u0441\u0442\u0435\u043c\u043d\u044b\u0439",
-  cartographicStyle: "\u041a\u0430\u0440\u0442\u043e\u0433\u0440\u0430\u0444\u0438\u0447\u0435\u0441\u043a\u0438\u0439 \u0441\u0442\u0438\u043b\u044c",
-  roadWidth: "\u0428\u0438\u0440\u0438\u043d\u0430 \u0434\u043e\u0440\u043e\u0433",
-  roadCasings: "\u041e\u0431\u0432\u043e\u0434\u043a\u0430 \u0434\u043e\u0440\u043e\u0433",
-  analysisOpacity: "\u041f\u0440\u043e\u0437\u0440\u0430\u0447\u043d\u043e\u0441\u0442\u044c \u0430\u043d\u0430\u043b\u0438\u0437\u0430",
-  thematicMap: "\u0422\u0435\u043c\u0430\u0442\u0438\u0447\u0435\u0441\u043a\u0430\u044f \u043a\u0430\u0440\u0442\u0430",
-  none: "\u041d\u0435\u0442",
-  importError: "\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0438\u043c\u043f\u043e\u0440\u0442\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u0444\u0430\u0439\u043b.",
+  layers: "Слои",
+  addLayer: "Добавить слой",
+  importLayer: "Импорт слоя",
+  chooseFile: "GeoJSON, Shapefile ZIP/SHP, DXF, CSV или GeoPackage",
+  cancel: "Отмена",
+  import: "Импорт",
+  opacity: "Прозрачность",
+  up: "Выше",
+  down: "Ниже",
+  remove: "Удалить",
+  lock: "Блокировка",
+  unlock: "Разблокировать",
+  cartographicStyle: "Стиль карты",
+  roadWidth: "Ширина дорог",
+  roadCasings: "Обводка дорог",
+  thematicMap: "Тематическая карта",
+  none: "Нет",
+  importError: "Не удалось импортировать файл.",
 };
 
 const thematicMapOptions = new ThematicMapEngine().getOptions();
 const cartographicThemeOptions = new CartographicStyleEngine().getThemeOptions();
+
+const groupLabels: Record<string, string> = {
+  base: "Базовые слои",
+  imports: "Импорт",
+  buildings: "Здания",
+  roads: "Дороги",
+  green: "Озеленение",
+  water: "Вода",
+  terrain: "Рельеф",
+  boundaries: "Границы",
+  custom: "Пользовательские",
+};
 
 export default function LayersPanel() {
   const {
     layers,
     toggleLayer,
     setLayerOpacity,
+    toggleLayerLock,
     addLayer,
     removeLayer,
     moveLayer,
@@ -51,6 +65,7 @@ export default function LayersPanel() {
     () => [...layers].sort((left, right) => left.order - right.order),
     [layers]
   );
+  const groupedLayers = useMemo(() => groupLayers(orderedLayers), [orderedLayers]);
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     setSelectedFile(event.target.files?.[0] ?? null);
@@ -60,112 +75,65 @@ export default function LayersPanel() {
   const handleImportLayer = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
-    if (!selectedFile) {
-      return;
-    }
+    if (!selectedFile) return;
 
     try {
       await addLayer(selectedFile);
       setSelectedFile(null);
       setIsImportDialogOpen(false);
-    } catch {
-      setImportError(text.importError);
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : text.importError);
     }
   };
 
   return (
-    <aside className="absolute left-6 top-6 z-20 max-h-[calc(100%-3rem)] w-[22rem] overflow-y-auto rounded-2xl border border-[#E5E7EB] bg-white p-5 shadow-xl">
+    <aside className="absolute left-6 top-6 z-20 max-h-[calc(100%-3rem)] w-[320px] overflow-y-auto rounded-[20px] border border-white/70 bg-white/62 p-5 backdrop-blur-3xl">
       <div className="mb-5 flex items-center justify-between gap-3">
-        <h2 className="text-xl font-bold">{text.layers}</h2>
+        <h2 className="text-xl font-semibold text-[#0F172A]">{text.layers}</h2>
         <button
           type="button"
           data-testid="add-layer-button"
           onClick={() => setIsImportDialogOpen(true)}
-          className="h-9 rounded-lg bg-[#229ED9] px-3 text-xs font-semibold text-white hover:bg-[#1D8CC2]"
+          className="inline-flex h-10 items-center gap-2 rounded-[14px] bg-[#229ED9] px-3 text-[13px] font-semibold text-white transition duration-200 ease-out hover:-translate-y-0.5"
         >
+          <Icon name="plus" />
           {text.addLayer}
         </button>
       </div>
 
-      <div className="space-y-3" data-testid="layers-list">
-        {orderedLayers.map((layer, index) => (
-          <section
-            key={layer.id}
-            data-testid={`layer-row-${layer.id}`}
-            className="rounded-xl border border-[#E5E7EB] p-3"
-          >
-            <div className="flex items-start justify-between gap-3">
-              <label className="flex min-w-0 items-center gap-2">
-                <input
-                  data-testid={`layer-visible-${layer.id}`}
-                  type="checkbox"
-                  checked={layer.visible}
-                  onChange={() => toggleLayer(layer.id)}
-                  className="h-5 w-5 shrink-0 accent-[#229ED9]"
+      <div className="space-y-4" data-testid="layers-list">
+        {groupedLayers.map((group) => (
+          <section key={group.id}>
+            <h3 className="mb-2 text-[12px] font-semibold uppercase text-[#64748B]">
+              {groupLabels[group.id] ?? group.id}
+            </h3>
+            <div className="space-y-2">
+              {group.layers.map((layer, index) => (
+                <LayerRow
+                  key={layer.id}
+                  layer={layer}
+                  index={index}
+                  total={group.layers.length}
+                  onToggle={() => toggleLayer(layer.id)}
+                  onOpacity={(value) => setLayerOpacity(layer.id, value)}
+                  onLock={() => toggleLayerLock(layer.id)}
+                  onMove={(direction) => moveLayer(layer.id, direction)}
+                  onRemove={() => removeLayer(layer.id)}
                 />
-                <span className="truncate text-sm font-semibold text-[#111827]">{layer.name}</span>
-              </label>
-              <span className="shrink-0 rounded-md bg-[#F1F5F9] px-2 py-1 text-[11px] font-semibold text-[#64748B]">
-                {layer.removable ? layer.sourceType : text.locked}
-              </span>
-            </div>
-
-            <label className="mt-3 block">
-              <span className="mb-1 flex justify-between text-xs text-[#64748B]">
-                <span>{text.opacity}</span>
-                <span>{Math.round(layer.opacity * 100)}%</span>
-              </span>
-              <input
-                data-testid={`layer-opacity-${layer.id}`}
-                type="range"
-                min={0}
-                max={1}
-                step={0.05}
-                value={layer.opacity}
-                onChange={(event) => setLayerOpacity(layer.id, Number(event.target.value))}
-                className="w-full accent-[#229ED9]"
-              />
-            </label>
-
-            <div className="mt-3 grid grid-cols-3 gap-2">
-              <button
-                type="button"
-                disabled={index === 0}
-                onClick={() => moveLayer(layer.id, -1)}
-                className="h-8 rounded-lg border border-[#D1D5DB] text-xs font-semibold text-[#374151] disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {text.up}
-              </button>
-              <button
-                type="button"
-                disabled={index === orderedLayers.length - 1}
-                onClick={() => moveLayer(layer.id, 1)}
-                className="h-8 rounded-lg border border-[#D1D5DB] text-xs font-semibold text-[#374151] disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {text.down}
-              </button>
-              <button
-                type="button"
-                data-testid={`remove-layer-${layer.id}`}
-                disabled={!layer.removable}
-                onClick={() => removeLayer(layer.id)}
-                className="h-8 rounded-lg border border-[#FCA5A5] text-xs font-semibold text-[#B91C1C] disabled:cursor-not-allowed disabled:border-[#E5E7EB] disabled:text-[#9CA3AF]"
-              >
-                {text.remove}
-              </button>
+              ))}
             </div>
           </section>
         ))}
       </div>
 
-      <div className="mt-5 space-y-3 border-t border-[#E5E7EB] pt-4">
+      <div className="mt-5 space-y-3 border-t border-white/70 pt-4">
         <ControlLabel title={text.cartographicStyle}>
           <select
             value={project.settings.display.cartographicTheme}
             onChange={(event) =>
               setMapDisplaySettings({ cartographicTheme: event.target.value as CartographicThemeId })
             }
-            className="h-10 w-full rounded-xl border border-[#E5E7EB] bg-white px-3 text-sm outline-none transition focus:border-[#229ED9]"
+            className={selectClassName}
           >
             {cartographicThemeOptions.map((option) => (
               <option key={option.id} value={option.id}>
@@ -181,15 +149,15 @@ export default function LayersPanel() {
             onChange={(event) =>
               setMapDisplaySettings({ roadWidthMode: event.target.value as RoadWidthMode })
             }
-            className="h-10 w-full rounded-xl border border-[#E5E7EB] bg-white px-3 text-sm outline-none transition focus:border-[#229ED9]"
+            className={selectClassName}
           >
-            <option value="class-based">class-based</option>
-            <option value="real-width">real-width</option>
-            <option value="custom">custom</option>
+            <option value="class-based">По классам</option>
+            <option value="real-width">Реальная ширина</option>
+            <option value="custom">Пользовательская</option>
           </select>
         </ControlLabel>
 
-        <label className="flex items-center justify-between rounded-xl border border-[#E5E7EB] px-3 py-2 text-sm text-[#374151]">
+        <label className="flex items-center justify-between rounded-[14px] border border-white/70 bg-white/45 px-3 py-2 text-sm">
           <span>{text.roadCasings}</span>
           <input
             type="checkbox"
@@ -199,25 +167,11 @@ export default function LayersPanel() {
           />
         </label>
 
-        <ControlLabel title={text.analysisOpacity}>
-          <input
-            type="range"
-            min={0.3}
-            max={1}
-            step={0.05}
-            value={project.settings.display.analysisLayerOpacity}
-            onChange={(event) =>
-              setMapDisplaySettings({ analysisLayerOpacity: Number(event.target.value) })
-            }
-            className="w-full accent-[#229ED9]"
-          />
-        </ControlLabel>
-
         <ControlLabel title={text.thematicMap}>
           <select
             value={project.settings.display.activeThematicMapType}
             onChange={(event) => setThematicMapType(event.target.value as ThematicMapType)}
-            className="h-10 w-full rounded-xl border border-[#E5E7EB] bg-white px-3 text-sm outline-none transition focus:border-[#229ED9]"
+            className={selectClassName}
           >
             <option value="none">{text.none}</option>
             {thematicMapOptions.map((option) => (
@@ -231,32 +185,33 @@ export default function LayersPanel() {
 
       {isImportDialogOpen ? (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-[#111827]/45 px-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F172A]/35 px-4 backdrop-blur-sm"
           role="dialog"
           aria-modal="true"
           data-testid="layer-import-dialog"
         >
-          <form onSubmit={handleImportLayer} className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl">
-            <h3 className="text-lg font-semibold">{text.importLayer}</h3>
+          <form
+            onSubmit={handleImportLayer}
+            className="w-full max-w-md rounded-[20px] border border-white/70 bg-white/78 p-6 backdrop-blur-3xl"
+          >
+            <h3 className="text-2xl font-semibold text-[#0F172A]">{text.importLayer}</h3>
             <p className="mt-2 text-sm text-[#64748B]">{text.chooseFile}</p>
 
             <input
               data-testid="layer-file-input"
               type="file"
-              accept=".geojson,.json,.kml,.gpx,.zip,.shp"
+              accept=".geojson,.json,.zip,.shp,.dxf,.csv,.gpkg,.geopackage"
               onChange={handleFileChange}
-              className="mt-5 w-full rounded-lg border border-[#D1D5DB] px-3 py-2 text-sm"
+              className="mt-5 w-full rounded-[14px] border border-white/70 bg-white/62 px-3 py-3 text-sm"
             />
 
-            {importError ? (
-              <p className="mt-3 text-sm font-medium text-[#DC2626]">{importError}</p>
-            ) : null}
+            {importError ? <p className="mt-3 text-sm font-medium text-[#EF4444]">{importError}</p> : null}
 
             <div className="mt-6 flex justify-end gap-3">
               <button
                 type="button"
                 onClick={() => setIsImportDialogOpen(false)}
-                className="h-10 rounded-lg border border-[#D1D5DB] px-4 text-sm font-semibold"
+                className="h-11 rounded-[14px] border border-white/70 bg-white/62 px-4 text-sm font-semibold"
               >
                 {text.cancel}
               </button>
@@ -264,7 +219,7 @@ export default function LayersPanel() {
                 type="submit"
                 data-testid="layer-import-submit"
                 disabled={!selectedFile}
-                className="h-10 rounded-lg bg-[#229ED9] px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-[#93C5FD]"
+                className="h-11 rounded-[14px] bg-[#229ED9] px-5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {text.import}
               </button>
@@ -276,11 +231,161 @@ export default function LayersPanel() {
   );
 }
 
-function ControlLabel({ title, children }: { title: string; children: React.ReactNode }) {
+function LayerRow({
+  layer,
+  index,
+  total,
+  onToggle,
+  onOpacity,
+  onLock,
+  onMove,
+  onRemove,
+}: {
+  layer: GISLayer;
+  index: number;
+  total: number;
+  onToggle: () => void;
+  onOpacity: (value: number) => void;
+  onLock: () => void;
+  onMove: (direction: -1 | 1) => void;
+  onRemove: () => void;
+}) {
+  return (
+    <section
+      data-testid={`layer-row-${layer.id}`}
+      className="rounded-[16px] border border-white/70 bg-white/45 p-3"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <button
+          type="button"
+          data-testid={`layer-visible-${layer.id}`}
+          onClick={onToggle}
+          className={`grid h-8 w-8 place-items-center rounded-[12px] border border-white/70 ${
+            layer.visible ? "bg-[#229ED9] text-white" : "bg-white/50 text-[#64748B]"
+          }`}
+          aria-label="Видимость слоя"
+        >
+          <Icon name="eye" />
+        </button>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-semibold text-[#0F172A]">{layer.name}</p>
+          <p className="mt-1 text-[12px] text-[#64748B]">{layer.sourceType}</p>
+        </div>
+        <button
+          type="button"
+          onClick={onLock}
+          className={`grid h-8 w-8 place-items-center rounded-[12px] border border-white/70 ${
+            layer.locked ? "bg-[#0F172A] text-white" : "bg-white/50 text-[#64748B]"
+          }`}
+          aria-label={layer.locked ? text.unlock : text.lock}
+        >
+          <Icon name={layer.locked ? "lock" : "unlock"} />
+        </button>
+      </div>
+
+      <label className="mt-3 block">
+        <span className="mb-1 flex justify-between text-[12px] text-[#64748B]">
+          <span>{text.opacity}</span>
+          <span>{Math.round(layer.opacity * 100)}%</span>
+        </span>
+        <input
+          data-testid={`layer-opacity-${layer.id}`}
+          type="range"
+          min={0}
+          max={1}
+          step={0.05}
+          value={layer.opacity}
+          disabled={layer.locked}
+          onChange={(event) => onOpacity(Number(event.target.value))}
+          className="w-full accent-[#229ED9] disabled:opacity-40"
+        />
+      </label>
+
+      <div className="mt-3 grid grid-cols-3 gap-2">
+        <SmallButton disabled={layer.locked || index === 0} onClick={() => onMove(-1)}>
+          {text.up}
+        </SmallButton>
+        <SmallButton disabled={layer.locked || index === total - 1} onClick={() => onMove(1)}>
+          {text.down}
+        </SmallButton>
+        <SmallButton danger disabled={!layer.removable || layer.locked} onClick={onRemove}>
+          {text.remove}
+        </SmallButton>
+      </div>
+    </section>
+  );
+}
+
+function ControlLabel({ title, children }: { title: string; children: ReactNode }) {
   return (
     <label className="block">
-      <span className="mb-2 block text-sm font-medium text-[#6B7280]">{title}</span>
+      <span className="mb-2 block text-[13px] font-medium text-[#64748B]">{title}</span>
       {children}
     </label>
   );
 }
+
+function SmallButton({
+  danger,
+  disabled,
+  children,
+  onClick,
+}: {
+  danger?: boolean;
+  disabled?: boolean;
+  children: ReactNode;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className={`h-8 rounded-[12px] border border-white/70 bg-white/50 text-[12px] font-semibold transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-40 ${
+        danger ? "text-[#EF4444]" : "text-[#0F172A]"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+type IconName = "eye" | "lock" | "plus" | "unlock";
+
+function Icon({ name }: { name: IconName }) {
+  const paths: Record<IconName, ReactNode> = {
+    eye: <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Zm10 3a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" />,
+    lock: <path d="M7 11V8a5 5 0 0 1 10 0v3M6 11h12v10H6z" />,
+    plus: <path d="M12 5v14M5 12h14" />,
+    unlock: <path d="M7 11V8a5 5 0 0 1 9.5-2.2M6 11h12v10H6z" />,
+  };
+
+  return (
+    <svg
+      className="h-4 w-4"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="1.8"
+      aria-hidden="true"
+    >
+      {paths[name]}
+    </svg>
+  );
+}
+
+function groupLayers(layers: GISLayer[]): Array<{ id: string; layers: GISLayer[] }> {
+  const groups = new Map<string, GISLayer[]>();
+
+  layers.forEach((layer) => {
+    const groupId = layer.groupId ?? (layer.category === "custom" ? "imports" : layer.category);
+    groups.set(groupId, [...(groups.get(groupId) ?? []), layer]);
+  });
+
+  return Array.from(groups.entries()).map(([id, groupLayers]) => ({ id, layers: groupLayers }));
+}
+
+const selectClassName =
+  "h-10 w-full rounded-[14px] border border-white/70 bg-white/62 px-3 text-sm outline-none backdrop-blur-3xl transition focus:border-[#229ED9]/60";

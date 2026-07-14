@@ -18,6 +18,7 @@ import type {
   FormiqTerritory,
   ImportSourceId,
   ProjectDisplaySettings,
+  ProjectThreeDSettings,
   ProjectOperation,
   ProjectWorkspaceMode,
 } from "@/types/formiq";
@@ -33,7 +34,20 @@ export interface ProjectState {
 }
 
 export type ProjectUpdatePatch = Partial<
-  Pick<FormiqProjectData, "name" | "description" | "city" | "author" | "crs" | "units">
+  Pick<
+    FormiqProjectData,
+    | "name"
+    | "description"
+    | "city"
+    | "author"
+    | "tags"
+    | "isArchived"
+    | "isPinned"
+    | "isFavorite"
+    | "lastOpenedAt"
+    | "crs"
+    | "units"
+  >
 >;
 
 export interface ProjectStore extends ProjectState {
@@ -47,19 +61,25 @@ export interface ProjectStore extends ProjectState {
   setProject: (projectId: string, updatedData: FormiqProjectData) => Promise<FormiqProjectData>;
   createProject: (data: CreateFormiqProjectInput) => Promise<FormiqProjectData>;
   addProject: (data: CreateFormiqProjectInput | FormiqProjectData) => Promise<FormiqProjectData>;
+  importProject: (data: unknown) => Promise<FormiqProjectData | null>;
   updateProject: (
     updaterOrId: ((project: FormiqProjectData) => FormiqProjectData) | string,
     patch?: ProjectUpdatePatch
   ) => void | Promise<FormiqProjectData | null>;
   duplicateProject: (projectId: string) => Promise<FormiqProjectData | null>;
+  setProjectArchived: (projectId: string, isArchived: boolean) => Promise<FormiqProjectData | null>;
+  setProjectPinned: (projectId: string, isPinned: boolean) => Promise<FormiqProjectData | null>;
+  setProjectFavorite: (projectId: string, isFavorite: boolean) => Promise<FormiqProjectData | null>;
   deleteProject: (projectId: string) => Promise<void>;
   syncMapViewport: (center: [number, number], zoom: number) => void;
   syncProjectFromLayers: (layers: GISLayer[], bounds?: BoundingBox) => void;
   syncProjectFromFusion: (fusionResult: DataFusionResult) => void;
   createTerritoryFromSelection: (selection: TerritorySelection, name?: string) => void;
+  updateTerritoryFromSelection: (selection: TerritorySelection, territoryId?: string) => void;
   setActiveTerritory: (territoryId: string) => void;
   setWorkspaceMode: (mode: ProjectWorkspaceMode) => void;
   setMapDisplaySettings: (settings: Partial<ProjectDisplaySettings>) => void;
+  setThreeDSettings: (settings: Partial<ProjectThreeDSettings>) => void;
   setImportSourceEnabled: (source: ImportSourceId, enabled: boolean) => void;
   recordOperation: (
     type: ProjectOperation["type"],
@@ -125,7 +145,16 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       return null;
     }
 
-    const normalizedProject = normalizeFormiqProject(project);
+    const openedAt = new Date().toISOString();
+    const normalizedProject = normalizeFormiqProject({
+      ...project,
+      lastOpenedAt: openedAt,
+      history: [
+        createProjectOperation("project-opened", "Проект открыт", openedAt),
+        ...(project.history ?? []),
+      ].slice(0, 200),
+    });
+    await projectStorage.saveProjectRecord(normalizedProject);
     await projectStorage.setActiveProjectId(normalizedProject.id);
 
     set({
@@ -217,6 +246,42 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     return project;
   },
 
+  importProject: async (data) => {
+    const projectLike = unwrapImportedProject(data);
+
+    if (!projectLike) {
+      return null;
+    }
+
+    const importedProject = normalizeFormiqProject(projectLike);
+    const hasIdConflict = Boolean(get().getById(importedProject.id));
+    const now = new Date().toISOString();
+    const project = normalizeFormiqProject({
+      ...importedProject,
+      id: hasIdConflict ? createEntityId() : importedProject.id,
+      name: hasIdConflict ? `${importedProject.name} (импорт)` : importedProject.name,
+      lastOpenedAt: importedProject.lastOpenedAt ?? null,
+      metadata: {
+        ...importedProject.metadata,
+        updatedAt: now,
+      },
+      history: [
+        createProjectOperation("project-created", "Проект импортирован", now, {
+          sourceProjectId: importedProject.id,
+        }),
+        ...importedProject.history,
+      ].slice(0, 200),
+    });
+
+    await projectStorage.saveProjectRecord(project);
+
+    set((state) => ({
+      projects: mergeProjects(state.projects, project),
+    }));
+
+    return project;
+  },
+
   updateProject: (
     updaterOrId: ((project: FormiqProjectData) => FormiqProjectData) | string,
     patch?: ProjectUpdatePatch
@@ -270,6 +335,15 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
 
     return get().addProject(project);
   },
+
+  setProjectArchived: (projectId, isArchived) =>
+    updateStoredProject(get, set, projectId, { isArchived }),
+
+  setProjectPinned: (projectId, isPinned) =>
+    updateStoredProject(get, set, projectId, { isPinned }),
+
+  setProjectFavorite: (projectId, isFavorite) =>
+    updateStoredProject(get, set, projectId, { isFavorite }),
 
   deleteProject: async (projectId) => {
     await projectStorage.deleteProject(projectId);
@@ -357,6 +431,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         name: name ?? `Территория ${project.territories.length + 1}`,
         type: "working-area",
         geometry: selection.geometry,
+        shape: selection.shape,
         bounds: selection.bounds,
         loadingBuffer: {
           distanceMeters: project.settings.analysis.defaultBufferMeters,
@@ -397,6 +472,54 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       return appendOperation(enrichProjectWithAnalysisCache(nextProject), "territory-created", "Территория создана", {
         territoryId: territory.id,
       });
+    }),
+
+  updateTerritoryFromSelection: (selection, territoryId) =>
+    get().updateProject((project) => {
+      const targetTerritoryId = territoryId ?? project.activeTerritoryId;
+
+      if (!targetTerritoryId) {
+        return project;
+      }
+
+      const existingTerritory = project.territories.find((territory) => territory.id === targetTerritoryId);
+
+      if (!existingTerritory) {
+        return project;
+      }
+
+      const nextProject: FormiqProjectData = {
+        ...project,
+        territories: project.territories.map((territory) =>
+          territory.id === targetTerritoryId
+            ? {
+                ...territory,
+                geometry: selection.geometry,
+                shape: selection.shape,
+                bounds: selection.bounds,
+                loadingBuffer: {
+                  ...territory.loadingBuffer,
+                  bounds: expandBounds(selection.bounds, territory.loadingBuffer.distanceMeters),
+                },
+                updatedAt: new Date().toISOString(),
+              }
+            : territory
+        ),
+        metadata: {
+          ...project.metadata,
+          bounds: selection.bounds,
+        },
+      };
+
+      return appendOperation(
+        enrichProjectWithAnalysisCache(nextProject),
+        "territory-updated",
+        "РўРµСЂСЂРёС‚РѕСЂРёСЏ РѕР±РЅРѕРІР»РµРЅР°",
+        {
+          territoryId: existingTerritory.id,
+          shape: selection.shape,
+        }
+      );
     }),
 
   setActiveTerritory: (territoryId) =>
@@ -468,6 +591,31 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         "Параметры отображения карты обновлены",
         {
           cartographicTheme: settings.cartographicTheme ?? null,
+        }
+      )
+    ),
+
+  setThreeDSettings: (settings) =>
+    get().updateProject((project) =>
+      appendOperation(
+        {
+          ...project,
+          settings: {
+            ...project.settings,
+            threeD: {
+              ...project.settings.threeD,
+              ...settings,
+              terrain: {
+                ...project.settings.threeD.terrain,
+                ...settings.terrain,
+              },
+            },
+          },
+        },
+        "project-settings-updated",
+        "3D map settings updated",
+        {
+          threeDMapType: settings.activeMapType ?? null,
         }
       )
     ),
@@ -544,6 +692,24 @@ function mergeProjects(projects: FormiqProjectData[], project: FormiqProjectData
 
 function isFormiqProjectData(data: CreateFormiqProjectInput | FormiqProjectData): data is FormiqProjectData {
   return "id" in data && "metadata" in data && "layers" in data && "territories" in data;
+}
+
+function unwrapImportedProject(data: unknown): Partial<FormiqProjectData> | null {
+  if (!isRecord(data)) {
+    return null;
+  }
+
+  const candidate = isRecord(data.project) ? data.project : data;
+
+  if (typeof candidate.name !== "string") {
+    return null;
+  }
+
+  return candidate as Partial<FormiqProjectData>;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object");
 }
 
 function appendOperation(

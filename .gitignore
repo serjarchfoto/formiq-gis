@@ -29,6 +29,15 @@ playwright-report/
 .codex/
 .git-backups/
 
+# FORMIQ local datasets
+apps/web/data/**/*.geojson
+apps/web/data/**/*.json
+apps/web/data/**/*.ndjson
+apps/web/data/**/*.parquet
+apps/web/data/**/*.pmtiles
+apps/web/data/**/*.zip
+!apps/web/data/README.md
+
 # OS/editor
 .DS_Store
 Thumbs.db

@@ -1,10 +1,10 @@
 "use client";
 
-import Image from "next/image";
 import { useMemo, useState } from "react";
-import { WorkspaceModeTabs } from "@/components/layout";
+import type { ReactNode } from "react";
 import {
   DataSourcesPanel,
+  getImportStageCount,
   importUnifiedContextByBoundingBox,
   type ImportProgressEvent,
 } from "@/features/import";
@@ -14,25 +14,20 @@ import { useSelectionStore } from "@/store/selection";
 import type { ImportSourceId } from "@/types/formiq";
 
 const text = {
-  searchPlaceholder:
-    "\u041f\u043e\u0438\u0441\u043a \u0430\u0434\u0440\u0435\u0441\u0430, OSM \u0438 \u0441\u043b\u043e\u0451\u0432 \u0441\u043a\u043e\u0440\u043e \u043f\u043e\u044f\u0432\u0438\u0442\u0441\u044f",
-  importData: "\u0418\u043c\u043f\u043e\u0440\u0442\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u0434\u0430\u043d\u043d\u044b\u0435",
-  importing: "\u0418\u043c\u043f\u043e\u0440\u0442...",
-  sources: "\u0418\u0441\u0442\u043e\u0447\u043d\u0438\u043a\u0438",
-  noBounds:
-    "\u041d\u0443\u0436\u043d\u0430 \u0430\u043a\u0442\u0438\u0432\u043d\u0430\u044f \u0442\u0435\u0440\u0440\u0438\u0442\u043e\u0440\u0438\u044f \u0438\u043b\u0438 \u0432\u044b\u0434\u0435\u043b\u0435\u043d\u0438\u0435.",
-  noSources:
-    "\u0412\u043a\u043b\u044e\u0447\u0438\u0442\u0435 \u0445\u043e\u0442\u044f \u0431\u044b \u043e\u0434\u0438\u043d \u0438\u0441\u0442\u043e\u0447\u043d\u0438\u043a.",
-  done:
-    "\u0418\u043c\u043f\u043e\u0440\u0442 \u0437\u0430\u0432\u0435\u0440\u0448\u0451\u043d.",
-  importFailed:
-    "\u0418\u043c\u043f\u043e\u0440\u0442 \u043d\u0435 \u0437\u0430\u0432\u0435\u0440\u0448\u0451\u043d.",
-  analysis: "\u0410\u043d\u0430\u043b\u0438\u0437",
-  notifications: "\u0423\u0432\u0435\u0434\u043e\u043c\u043b\u0435\u043d\u0438\u044f \u043f\u043e\u044f\u0432\u044f\u0442\u0441\u044f \u043f\u043e\u0437\u0436\u0435",
-  profileTitle:
-    "\u041f\u0440\u043e\u0444\u0438\u043b\u044c \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u044f \u043f\u043e\u044f\u0432\u0438\u0442\u0441\u044f \u043f\u043e\u0437\u0436\u0435",
-  userName: "\u0421\u0435\u0440\u0433\u0435\u0439",
-  role: "\u0410\u0440\u0445\u0438\u0442\u0435\u043a\u0442\u043e\u0440",
+  mode: "Архитектура",
+  searchPlaceholder: "Поиск адреса или объекта",
+  importTerritory: "Импортировать территорию",
+  importing: "Импорт...",
+  sources: "Источники данных",
+  noBounds: "Сначала выберите территорию на карте.",
+  noSources: "Включите хотя бы один источник.",
+  done: "Импорт завершен.",
+  importFailed: "Импорт не завершен.",
+  saving: "Сохранение...",
+  account: "Аккаунт",
+  settings: "Настройки",
+  notifications: "Уведомления",
+  help: "Справка",
 };
 
 export default function TopBar() {
@@ -59,12 +54,14 @@ export default function TopBar() {
   const progressPercent =
     enabledSources.length === 0
       ? 0
-      : Math.round((importLog.filter((event) => event.status !== "loading").length / enabledSources.length) * 100);
+      : Math.round(
+          (importLog.filter((event) => event.status !== "loading").length /
+            getImportStageCount(enabledSources)) *
+            100
+        );
 
   const handleImport = async () => {
-    if (isImporting) {
-      return;
-    }
+    if (isImporting) return;
 
     if (!importBounds) {
       setStatusMessage(text.noBounds);
@@ -83,14 +80,12 @@ export default function TopBar() {
     setImportLog([]);
 
     try {
-      const result = await importUnifiedContextByBoundingBox(importBounds, {
+      await importUnifiedContextByBoundingBox(importBounds, {
         sources: enabledSources,
-        onProgress: (event) => {
-          setImportLog((current) => mergeImportLog(current, event));
-        },
+        onProgress: (event) => setImportLog((current) => mergeImportLog(current, event)),
+        onProjectUpdate: syncProjectFromFusion,
       });
 
-      syncProjectFromFusion(result.fusionResult);
       setStatusMessage(text.done);
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : text.importFailed);
@@ -100,86 +95,52 @@ export default function TopBar() {
   };
 
   return (
-    <header className="flex h-16 items-center justify-between border-b border-[var(--border)] bg-white px-8">
-      <div className="flex min-w-0 flex-1 items-center gap-4">
-        <input
-          type="text"
-          placeholder={text.searchPlaceholder}
-          disabled
-          className="h-11 w-full max-w-md rounded-xl border border-[var(--border)] bg-[var(--background)] px-5 text-sm text-[var(--text-light)] outline-none"
-        />
-        <WorkspaceModeTabs />
-
-        <div className="relative flex shrink-0 items-center gap-2">
-          <button
-            type="button"
-            data-testid="single-import-button"
-            onClick={handleImport}
-            disabled={isImporting}
-            title={importBounds ? text.importData : text.noBounds}
-            className="rounded-xl bg-[#229ED9] px-5 py-2.5 text-sm font-bold text-white shadow-sm transition hover:bg-[#1D8CC2] disabled:cursor-not-allowed disabled:bg-[#93C5FD]"
-          >
-            {isImporting ? text.importing : text.importData}
-          </button>
-
-          <button
-            type="button"
-            data-testid="data-sources-button"
-            onClick={() => setIsSourcesPanelOpen((current) => !current)}
-            className="rounded-xl border border-[var(--border)] bg-white px-4 py-2.5 text-sm font-semibold text-[#374151] transition hover:bg-[#F8FAFC]"
-          >
-            {text.sources}
-          </button>
-
-          {isSourcesPanelOpen ? <DataSourcesPanel /> : null}
-          {isImporting || importLog.length > 0 || statusMessage ? (
-            <ImportProgressPopover
-              progressPercent={progressPercent}
-              events={importLog}
-              statusMessage={statusMessage}
-            />
-          ) : null}
-        </div>
+    <header className="absolute left-6 right-6 top-6 z-30 flex h-14 items-center justify-between gap-4 rounded-[20px] border border-white/70 bg-white/62 px-3 backdrop-blur-3xl max-lg:left-4 max-lg:right-4">
+      <div className="flex min-w-0 items-center gap-3">
+        <span className="hidden h-10 items-center rounded-[14px] bg-white/50 px-4 text-sm font-semibold text-[#0F172A] xl:flex">
+          {text.mode}
+        </span>
+        <label className="relative hidden md:block">
+          <Icon className="absolute left-4 top-1/2 -translate-y-1/2 text-[#64748B]" name="search" />
+          <input
+            placeholder={text.searchPlaceholder}
+            className="h-11 w-[360px] rounded-[14px] border border-white/70 bg-white/62 pl-11 pr-4 text-sm outline-none backdrop-blur-3xl transition focus:border-[#229ED9]/60"
+          />
+        </label>
       </div>
 
-      <div className="relative ml-8 flex items-center gap-3">
-        <span className="hidden max-w-48 truncate text-xs font-medium text-[#6B7280] lg:inline">
-          {isSaving ? "\u0421\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u0438\u0435..." : project.name}
+      <div className="relative flex min-w-0 items-center gap-2">
+        <span className="hidden max-w-44 truncate text-[13px] font-medium text-[#64748B] lg:inline">
+          {isSaving ? text.saving : project.name}
         </span>
-
         <button
-          disabled
-          title="\u041e\u0442\u0434\u0435\u043b\u044c\u043d\u0430\u044f \u043f\u0430\u043d\u0435\u043b\u044c \u0430\u043d\u0430\u043b\u0438\u0437\u0430 \u043f\u043e\u044f\u0432\u0438\u0442\u0441\u044f \u043f\u043e\u0437\u0436\u0435"
-          className="rounded-xl bg-[#BFDBFE] px-5 py-2 text-sm font-semibold text-white transition disabled:cursor-not-allowed"
+          type="button"
+          data-testid="single-import-button"
+          onClick={handleImport}
+          disabled={isImporting}
+          className="inline-flex h-11 items-center gap-2 whitespace-nowrap rounded-[14px] bg-[#229ED9] px-4 text-sm font-semibold text-white transition duration-200 ease-out hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-55"
         >
-          {text.analysis}
+          <Icon name="download" />
+          {isImporting ? text.importing : text.importTerritory}
+        </button>
+        <button
+          type="button"
+          data-testid="data-sources-button"
+          onClick={() => setIsSourcesPanelOpen((current) => !current)}
+          className="inline-flex h-11 items-center gap-2 whitespace-nowrap rounded-[14px] border border-white/70 bg-white/62 px-4 text-sm font-semibold backdrop-blur-3xl transition duration-200 ease-out hover:-translate-y-0.5"
+        >
+          <Icon name="database" />
+          <span className="hidden sm:inline">{text.sources}</span>
         </button>
 
-        <button
-          disabled
-          title={text.notifications}
-          className="flex h-10 w-10 items-center justify-center rounded-xl border border-[var(--border)] bg-white text-lg text-[#9CA3AF] transition disabled:cursor-not-allowed"
-        >
-          !
-        </button>
-
-        <button
-          disabled
-          title={text.profileTitle}
-          className="flex items-center gap-3 rounded-xl border border-[var(--border)] bg-white px-3 py-2 transition disabled:cursor-not-allowed"
-        >
-          <Image
-            src="/logo/icon.png"
-            alt="FORMIQ"
-            width={34}
-            height={34}
+        {isSourcesPanelOpen ? <DataSourcesPanel /> : null}
+        {isImporting || importLog.length > 0 || statusMessage ? (
+          <ImportProgressPopover
+            progressPercent={progressPercent}
+            events={importLog}
+            statusMessage={statusMessage}
           />
-
-          <div className="text-left leading-tight">
-            <p className="text-sm font-semibold text-[var(--text)]">{text.userName}</p>
-            <p className="text-xs text-[var(--text-light)]">{text.role}</p>
-          </div>
-        </button>
+        ) : null}
       </div>
     </header>
   );
@@ -197,49 +158,72 @@ function ImportProgressPopover({
   return (
     <aside
       data-testid="import-progress-popover"
-      className="absolute right-0 top-14 z-40 w-96 rounded-xl border border-[#E5E7EB] bg-white p-4 shadow-xl"
+      className="absolute right-0 top-14 z-40 w-96 rounded-[20px] border border-white/70 bg-white/78 p-4 text-sm backdrop-blur-3xl"
     >
-      <div className="h-2 overflow-hidden rounded-full bg-[#E5E7EB]">
-        <div
-          className="h-full bg-[#229ED9] transition-all"
-          style={{ width: `${progressPercent}%` }}
-        />
+      <div className="h-2 overflow-hidden rounded-full bg-[#E2E8F0]">
+        <div className="h-full bg-[#229ED9] transition-all" style={{ width: `${progressPercent}%` }} />
       </div>
 
-      {statusMessage ? (
-        <p className="mt-3 text-sm font-semibold text-[#111827]">{statusMessage}</p>
-      ) : null}
+      {statusMessage ? <p className="mt-3 font-semibold text-[#0F172A]">{statusMessage}</p> : null}
 
       <div className="mt-3 max-h-56 space-y-2 overflow-y-auto">
         {events.map((event) => (
-          <div
-            key={event.source}
-            data-testid={`import-log-${event.source}`}
-            className="rounded-lg border border-[#E5E7EB] px-3 py-2 text-xs"
-          >
+          <div key={event.source} className="rounded-[14px] border border-white/70 bg-white/50 px-3 py-2">
             <div className="flex items-center justify-between gap-3">
-              <span className="font-semibold text-[#111827]">{event.label}</span>
-              <span
-                className={
-                  event.status === "error"
-                    ? "text-[#DC2626]"
-                    : event.status === "loading"
-                      ? "text-[#D97706]"
-                      : "text-[#059669]"
-                }
-              >
-                {event.status}
-              </span>
+              <span className="font-semibold text-[#0F172A]">{event.label}</span>
+              <span className="text-[12px] text-[#64748B]">{formatStatus(event.status)}</span>
             </div>
-            <p className="mt-1 text-[#64748B]">{event.message}</p>
-            {event.errorMessage ? (
-              <p className="mt-1 text-[#DC2626]">{event.errorMessage}</p>
+            <p className="mt-1 text-[12px] text-[#64748B]">{event.message}</p>
+            {event.status === "error" && event.errorMessage ? (
+              <p className="mt-1 text-[12px] text-[#EF4444]">{event.errorMessage}</p>
             ) : null}
           </div>
         ))}
       </div>
     </aside>
   );
+}
+
+type IconName = "bell" | "chevron" | "database" | "download" | "help" | "search" | "settings";
+
+function Icon({ name, className = "" }: { name: IconName; className?: string }) {
+  const paths: Record<IconName, ReactNode> = {
+    bell: <path d="M6 16h12l-2-3V9a4 4 0 0 0-8 0v4l-2 3Zm4 3h4" />,
+    chevron: <path d="m8 10 4 4 4-4" />,
+    database: <path d="M4 6c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3Zm0 0v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6" />,
+    download: <path d="M12 4v10m0 0 4-4m-4 4-4-4M5 20h14" />,
+    help: <path d="M9.1 9a3 3 0 1 1 5.8 1c-.4 1.2-1.6 1.8-2.4 2.6-.4.4-.5.8-.5 1.4M12 17h.01M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />,
+    search: <path d="m21 21-4.3-4.3M10.5 18a7.5 7.5 0 1 1 0-15 7.5 7.5 0 0 1 0 15Z" />,
+    settings: <path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm0-5v3m0 12v3M4.2 4.2l2.1 2.1m11.4 11.4 2.1 2.1M1 12h3m16 0h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1" />,
+  };
+
+  return (
+    <svg
+      className={`h-4 w-4 shrink-0 ${className}`}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="1.8"
+      aria-hidden="true"
+    >
+      {paths[name]}
+    </svg>
+  );
+}
+
+function formatStatus(status: ImportProgressEvent["status"]): string {
+  const labels: Record<ImportProgressEvent["status"], string> = {
+    ready: "готово",
+    loading: "загрузка",
+    "not-configured": "не настроен",
+    "rate-limited": "лимит",
+    offline: "недоступен",
+    error: "ошибка",
+  };
+
+  return labels[status] ?? status;
 }
 
 function mergeImportLog(

@@ -2,6 +2,7 @@
 
 import { create } from "zustand";
 import type { Position } from "geojson";
+import type { OfflineTileSource } from "@/lib/gis-engine/pmtiles";
 
 export interface MapViewport {
   center: [number, number];
@@ -29,6 +30,7 @@ interface MapStore {
   measurementMode: MeasurementMode;
   measurementPoints: Position[];
   selectedObject: SelectedMapObject | null;
+  pmTilesSources: OfflineTileSource[];
   setViewport: (viewport: MapViewport) => void;
   setCursorCoordinates: (coordinates: CursorCoordinates | null) => void;
   setScaleLabel: (scaleLabel: string) => void;
@@ -36,6 +38,8 @@ interface MapStore {
   addMeasurementPoint: (point: Position) => void;
   clearMeasurement: () => void;
   setSelectedObject: (object: SelectedMapObject | null) => void;
+  addPMTilesSource: (source: OfflineTileSource) => void;
+  removePMTilesSource: (id: string) => void;
 }
 
 export const useMapStore = create<MapStore>((set) => ({
@@ -48,6 +52,7 @@ export const useMapStore = create<MapStore>((set) => ({
   measurementMode: "none",
   measurementPoints: [],
   selectedObject: null,
+  pmTilesSources: [],
   setViewport: (viewport) => set({ viewport }),
   setCursorCoordinates: (cursorCoordinates) => set({ cursorCoordinates }),
   setScaleLabel: (scaleLabel) => set({ scaleLabel }),
@@ -67,4 +72,15 @@ export const useMapStore = create<MapStore>((set) => ({
       measurementPoints: [],
     }),
   setSelectedObject: (selectedObject) => set({ selectedObject }),
+  addPMTilesSource: (source) =>
+    set((state) => ({
+      pmTilesSources: [
+        ...state.pmTilesSources.filter((candidate) => candidate.id !== source.id),
+        source,
+      ],
+    })),
+  removePMTilesSource: (id) =>
+    set((state) => ({
+      pmTilesSources: state.pmTilesSources.filter((source) => source.id !== id),
+    })),
 }));

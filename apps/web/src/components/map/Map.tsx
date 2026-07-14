@@ -1,19 +1,31 @@
 "use client";
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import maplibregl, {
   type GeoJSONSource,
   type Map as MapLibreMap,
   type MapMouseEvent,
 } from "maplibre-gl";
 import type { FeatureCollection, GeoJsonProperties, Geometry, Position } from "geojson";
-import { createRectangleCoordinates, createSelectionFeatureCollection } from "@/features/selection";
+import {
+  createRectangleCoordinates,
+  createSelectionFeatureCollection,
+  getRectangleRotationAngle,
+  rotateRectangleCoordinates,
+  resizeRectangleCoordinates,
+  toPolygonCoordinates,
+  translateSelectionCoordinates,
+  updatePolygonVertex,
+} from "@/features/selection/selectionGeometry";
 import {
   CartographicStyleEngine,
   formiqLayerDataToFeatureCollection,
   getCachedAnalysisTimestamp,
   isThematicMapDefinition,
+  ThreeDThematicMapEngine,
+  type ThreeDRenderableMap,
   type ThematicMapDefinition,
+  type ThematicMapType,
 } from "@/lib";
 import { useLayers } from "@/store/layers";
 import { useMapStore, type SelectedMapObject } from "@/store/map";
@@ -24,7 +36,14 @@ import type {
   CartographicThemeId,
   FormiqEntity,
   FormiqProjectData,
+  ProjectWorkspaceMode,
+  TerrainSourceId,
 } from "@/types/formiq";
+import {
+  createPMTilesPresentationSources,
+  PMTilesViewportTileManager,
+  type PMTilesPresentationStats,
+} from "./pmtilesPresentation";
 
 const SELECTION_SOURCE_ID = "formiq-selection";
 const SELECTION_FILL_LAYER_ID = "formiq-selection-fill";
@@ -34,43 +53,101 @@ const THEMATIC_SOURCE_ID = "thematic";
 const THEMATIC_FILL_LAYER_ID = "thematic-fill";
 const THEMATIC_LINE_LAYER_ID = "thematic-line";
 const THEMATIC_POINT_LAYER_ID = "thematic-point";
+const THREE_D_BUILDINGS_SOURCE_ID = "formiq-3d-buildings";
+const THREE_D_PRESENTATION_WASH_SOURCE_ID = "formiq-3d-presentation-wash";
+const THREE_D_ZONES_SOURCE_ID = "formiq-3d-zones";
+const THREE_D_ROUTES_SOURCE_ID = "formiq-3d-routes";
+const THREE_D_POI_SOURCE_ID = "formiq-3d-poi";
+const THREE_D_TERRAIN_SOURCE_ID = "formiq-3d-terrain";
+const MAPLIBRE_TERRAIN_SOURCE_ID_PREFIX = "formiq-maplibre-terrain-dem";
+const THREE_D_TERRITORY_BOUNDARY_SOURCE_ID = "formiq-3d-territory-boundary";
+const THREE_D_BUILDINGS_LAYER_ID = "formiq-3d-buildings";
+const THREE_D_PRESENTATION_WASH_LAYER_ID = "formiq-3d-presentation-wash";
+const THREE_D_BUILDING_OUTLINE_LAYER_ID = "formiq-3d-building-outline";
+const THREE_D_HEIGHT_LABELS_LAYER_ID = "formiq-3d-height-labels";
+const THREE_D_ZONES_LAYER_ID = "formiq-3d-zones";
+const THREE_D_ZONE_OUTLINE_LAYER_ID = "formiq-3d-zone-outline";
+const THREE_D_ROUTES_LAYER_ID = "formiq-3d-routes";
+const THREE_D_POI_LAYER_ID = "formiq-3d-poi";
+const THREE_D_TERRAIN_LAYER_ID = "formiq-3d-terrain";
+const THREE_D_TERRITORY_BOUNDARY_LAYER_ID = "formiq-3d-territory-boundary";
 const cartographicStyleEngine = new CartographicStyleEngine();
+const threeDThematicMapEngine = new ThreeDThematicMapEngine();
 
-export default function Map() {
+interface SelectionDragState {
+  kind: "move" | "rotate" | "resize" | "vertex";
+  startPointer: Position;
+  initialCoordinates: Position[];
+  handleId?: string;
+  vertexIndex?: number;
+}
+
+interface MapProps {
+  workspaceModeOverride?: ProjectWorkspaceMode;
+  thematicMapTypeOverride?: ThematicMapType;
+  thematicMapOverride?: ThematicMapDefinition | null;
+  showNavigationControls?: boolean;
+}
+
+export default function Map({
+  workspaceModeOverride,
+  thematicMapTypeOverride,
+  thematicMapOverride,
+  showNavigationControls = true,
+}: MapProps = {}) {
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const rectangleStartRef = useRef<Position | null>(null);
   const renderedLayerIdsRef = useRef<Set<string>>(new Set());
   const thematicLayerTypeRef = useRef<string>("none");
+  const sourceDataHashesRef = useRef<globalThis.Map<string, string>>(new globalThis.Map());
+  const pmTilesManagerRef = useRef(new PMTilesViewportTileManager());
   const isMapStyleReadyRef = useRef(false);
+  const selectionDragRef = useRef<SelectionDragState | null>(null);
   const layers = useLayers((state) => state.layers);
+  const pmTilesSources = useMapStore((state) => state.pmTilesSources);
   const project = useProjectStore((state) => state.project);
   const displaySettings = project.settings.display;
-  const thematicMapType = displaySettings.activeThematicMapType;
+  const workspaceMode = workspaceModeOverride ?? displaySettings.workspaceMode;
+  const thematicMapType = thematicMapTypeOverride ?? displaySettings.activeThematicMapType;
   const thematicMap = useMemo(
-    () => getCachedThematicMap(project, thematicMapType),
-    [project, thematicMapType]
+    () =>
+      thematicMapOverride !== undefined
+        ? thematicMapOverride
+        : getCachedThematicMap(project, thematicMapType),
+    [project, thematicMapOverride, thematicMapType]
   );
   const thematicSourceHash = useMemo(
     () => getThematicSourceHash(project, thematicMapType, thematicMap),
     [project, thematicMapType, thematicMap]
   );
+  const threeDMap = useMemo(
+    () => threeDThematicMapEngine.build(project),
+    [project]
+  );
+  const showDebugOverlay =
+    process.env.NEXT_PUBLIC_FORMIQ_DEBUG === "true" || project.settings.debug.enabled;
+  const terrainDiagnostics = getTerrainDiagnostics(project, threeDMap, workspaceMode === "3d");
   const lastAnalysisTimestamp = getCachedAnalysisTimestamp(project);
   const mode = useSelectionStore((state) => state.mode);
   const selection = useSelectionStore((state) => state.selection);
   const draftCoordinates = useSelectionStore((state) => state.draftCoordinates);
   const setDraftCoordinates = useSelectionStore((state) => state.setDraftCoordinates);
   const commitRectangle = useSelectionStore((state) => state.commitRectangle);
+  const setSelectionPreview = useSelectionStore((state) => state.setSelectionPreview);
+  const commitSelectionUpdate = useSelectionStore((state) => state.commitSelectionUpdate);
   const setViewport = useMapStore((state) => state.setViewport);
   const setCursorCoordinates = useMapStore((state) => state.setCursorCoordinates);
   const setScaleLabel = useMapStore((state) => state.setScaleLabel);
   const measurementMode = useMapStore((state) => state.measurementMode);
   const addMeasurementPoint = useMapStore((state) => state.addMeasurementPoint);
   const setSelectedObject = useMapStore((state) => state.setSelectedObject);
+  const [pmTilesStats, setPMTilesStats] = useState<PMTilesPresentationStats | null>(null);
 
   useEffect(() => {
     if (!mapContainer.current || mapRef.current) return;
 
+    const sourceDataHashes = sourceDataHashesRef.current;
     const map = new maplibregl.Map({
       container: mapContainer.current,
       style: cartographicStyleEngine.createBlankMapLibreStyle(displaySettings.cartographicTheme),
@@ -80,7 +157,9 @@ export default function Map() {
 
     mapRef.current = map;
     (window as unknown as { __formiqMap?: MapLibreMap }).__formiqMap = map;
-    map.addControl(new maplibregl.NavigationControl(), "top-right");
+    if (showNavigationControls) {
+      map.addControl(new maplibregl.NavigationControl(), "top-right");
+    }
 
     const syncViewportState = () => {
       const center = map.getCenter();
@@ -127,25 +206,88 @@ export default function Map() {
       delete (window as unknown as { __formiqMap?: MapLibreMap }).__formiqMap;
       mapRef.current = null;
       isMapStyleReadyRef.current = false;
+      sourceDataHashes.clear();
     };
-  }, [displaySettings.cartographicTheme, displaySettings.mapCenter, displaySettings.mapZoom, setCursorCoordinates, setScaleLabel, setViewport]);
+  }, [displaySettings.cartographicTheme, displaySettings.mapCenter, displaySettings.mapZoom, setCursorCoordinates, setScaleLabel, setViewport, showNavigationControls]);
 
   useEffect(() => {
     const map = mapRef.current;
 
     if (!map) return;
 
+    const syncPMTiles = () => {
+      if (!isMapStyleAvailable(map)) return;
+
+      const presentationSources = createPMTilesPresentationSources(pmTilesSources, layers);
+      if (presentationSources.length === 0) {
+        pmTilesManagerRef.current.clear(map);
+        setPMTilesStats(null);
+        return;
+      }
+
+      const bounds = map.getBounds();
+      void pmTilesManagerRef.current
+        .update(map, presentationSources, {
+          zoom: map.getZoom(),
+          bbox: {
+            west: bounds.getWest(),
+            south: bounds.getSouth(),
+            east: bounds.getEast(),
+            north: bounds.getNorth(),
+          },
+          center: [map.getCenter().lng, map.getCenter().lat],
+          bearing: map.getBearing(),
+          pitch: map.getPitch(),
+        })
+        .then(setPMTilesStats);
+    };
+
+    if (isMapStyleReadyRef.current || map.isStyleLoaded()) {
+      syncPMTiles();
+    } else {
+      map.once("load", syncPMTiles);
+    }
+
+    map.on("moveend", syncPMTiles);
+    map.on("zoomend", syncPMTiles);
+    map.on("rotateend", syncPMTiles);
+    map.on("pitchend", syncPMTiles);
+
+    return () => {
+      map.off("moveend", syncPMTiles);
+      map.off("zoomend", syncPMTiles);
+      map.off("rotateend", syncPMTiles);
+      map.off("pitchend", syncPMTiles);
+    };
+  }, [pmTilesSources, layers]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+
+    if (!map) return;
+    if (!isMapStyleAvailable(map)) return;
+
     const theme = cartographicStyleEngine.getTheme(displaySettings.cartographicTheme);
 
     if (map.getLayer("formiq-background")) {
-      map.setPaintProperty("formiq-background", "background-color", theme.colors.canvas);
+      map.setPaintProperty(
+        "formiq-background",
+        "background-color",
+        workspaceMode === "3d" && project.settings.threeD.visualStyle === "presentation"
+          ? "#FBFAF7"
+          : theme.colors.canvas
+      );
     }
 
     if (map.getLayer("formiq-basemap")) {
+      const isPresentation3D =
+        workspaceMode === "3d" && project.settings.threeD.visualStyle === "presentation";
       map.setPaintProperty(
         "formiq-basemap",
         "raster-opacity",
-        displaySettings.cartographicTheme === "print"
+        isPresentation3D
+          ? 0.18
+          : displaySettings.cartographicTheme === "print"
           ? 0.72
           : displaySettings.cartographicTheme === "blueprint"
             ? 0.38
@@ -154,30 +296,31 @@ export default function Map() {
       map.setPaintProperty(
         "formiq-basemap",
         "raster-saturation",
-        displaySettings.cartographicTheme === "blueprint" ? -1 : -0.15
+        isPresentation3D || displaySettings.cartographicTheme === "blueprint" ? -1 : -0.15
       );
       map.setPaintProperty(
         "formiq-basemap",
         "raster-contrast",
-        displaySettings.cartographicTheme === "dark" ? 0.08 : 0
+        isPresentation3D ? -0.1 : displaySettings.cartographicTheme === "dark" ? 0.08 : 0
       );
       map.setPaintProperty(
         "formiq-basemap",
         "raster-brightness-min",
-        displaySettings.cartographicTheme === "dark" ? 0.18 : 0
+        isPresentation3D ? 0.72 : displaySettings.cartographicTheme === "dark" ? 0.18 : 0
       );
       map.setPaintProperty(
         "formiq-basemap",
         "raster-brightness-max",
-        displaySettings.cartographicTheme === "dark" ? 0.92 : 1
+        isPresentation3D ? 1 : displaySettings.cartographicTheme === "dark" ? 0.92 : 1
       );
     }
-  }, [displaySettings.cartographicTheme]);
+  }, [displaySettings.cartographicTheme, project.settings.threeD.visualStyle, workspaceMode]);
 
   useEffect(() => {
     const map = mapRef.current;
 
     if (!map) return;
+    if (!isMapStyleAvailable(map)) return;
 
     const center = map.getCenter();
     const currentCenter: [number, number] = [center.lng, center.lat];
@@ -200,22 +343,24 @@ export default function Map() {
     const map = mapRef.current;
 
     if (!map) return;
+    if (!isMapStyleAvailable(map)) return;
 
     map.easeTo({
-      pitch: displaySettings.workspaceMode === "3d" ? 60 : 0,
-      bearing: 0,
+      pitch: workspaceMode === "3d" ? 60 : 0,
+      bearing: workspaceMode === "3d" ? -30 : 0,
       duration: 500,
     });
-  }, [displaySettings.workspaceMode]);
+  }, [workspaceMode]);
 
   useEffect(() => {
     const map = mapRef.current;
 
     if (!map) return;
+    if (!isMapStyleAvailable(map)) return;
 
     const suppressedCategories = getSuppressedBaseCategories(
       thematicMapType,
-      displaySettings.workspaceMode
+      workspaceMode
     );
 
     const syncLayers = () => {
@@ -226,7 +371,8 @@ export default function Map() {
         showRoadCasings: displaySettings.showRoadCasings,
       });
 
-      const nextLayerIds = new Set(layers.map((layer) => layer.id));
+      const renderableLayers = layers.filter((layer) => layer.sourceType !== "pmtiles");
+      const nextLayerIds = new Set(renderableLayers.map((layer) => layer.id));
 
       renderedLayerIdsRef.current.forEach((layerId) => {
         if (!nextLayerIds.has(layerId)) {
@@ -235,8 +381,8 @@ export default function Map() {
         }
       });
 
-      layers.forEach((layer) => {
-        syncGISLayer(map, layer, style, suppressedCategories);
+      renderableLayers.forEach((layer) => {
+        syncGISLayer(map, layer, style, suppressedCategories, sourceDataHashesRef.current);
         renderedLayerIdsRef.current.add(layer.id);
       });
     };
@@ -247,12 +393,13 @@ export default function Map() {
     }
 
     map.once("load", syncLayers);
-  }, [layers, displaySettings, thematicMapType]);
+  }, [layers, displaySettings, thematicMapType, workspaceMode]);
 
   useEffect(() => {
     const map = mapRef.current;
 
     if (!map) return;
+    if (!isMapStyleAvailable(map)) return;
 
     const syncSelection = () => {
       syncSelectionLayer(
@@ -260,7 +407,8 @@ export default function Map() {
         selection,
         draftCoordinates,
         displaySettings.cartographicTheme,
-        thematicMapType !== "none"
+        thematicMapType !== "none",
+        sourceDataHashesRef.current
       );
     };
 
@@ -283,10 +431,11 @@ export default function Map() {
       thematicLayerTypeRef.current = thematicMapType;
       syncThematicLayer(
         map,
-        thematicMap,
+        workspaceMode === "3d" ? null : thematicMap,
         thematicSourceHash,
         displaySettings.analysisLayerOpacity,
-        previousThematicMapType !== thematicMapType
+        previousThematicMapType !== thematicMapType,
+        sourceDataHashesRef.current
       );
     };
 
@@ -296,7 +445,39 @@ export default function Map() {
     }
 
     map.once("load", syncTheme);
-  }, [thematicMap, thematicMapType, thematicSourceHash, displaySettings.analysisLayerOpacity]);
+  }, [thematicMap, thematicMapType, thematicSourceHash, displaySettings.analysisLayerOpacity, workspaceMode]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+
+    if (!map) return;
+
+    const sync3D = () => {
+      syncThreeDThematicMap(
+        map,
+        project,
+        threeDMap,
+        project.settings.threeD.zoneOpacity,
+        workspaceMode === "3d",
+        project.settings.threeD.visualStyle,
+        sourceDataHashesRef.current
+      );
+    };
+
+    if (isMapStyleReadyRef.current || map.isStyleLoaded()) {
+      sync3D();
+      const retryId = window.setTimeout(sync3D, 250);
+      return () => window.clearTimeout(retryId);
+    }
+
+    map.once("load", sync3D);
+  }, [
+    threeDMap,
+    project,
+    project.settings.threeD.zoneOpacity,
+    project.settings.threeD.visualStyle,
+    workspaceMode,
+  ]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -322,27 +503,76 @@ export default function Map() {
       setDraftCoordinates(createRectangleCoordinates(start, start));
     };
 
-    const handleMouseMove = (event: MapMouseEvent) => {
-      if (mode !== "rectangle" || !rectangleStartRef.current) return;
+    const handleSelectionDragStart = (event: MapMouseEvent) => {
+      if (mode !== "none" || measurementMode !== "none" || !selection) {
+        return;
+      }
 
-      const end: Position = [event.lngLat.lng, event.lngLat.lat];
-      setDraftCoordinates(createRectangleCoordinates(rectangleStartRef.current, end));
+      const action = resolveSelectionDragState(map, event, selection);
+
+      if (!action) {
+        return;
+      }
+
+      event.preventDefault();
+      map.dragPan.disable();
+      selectionDragRef.current = action;
+    };
+
+    const handleMouseMove = (event: MapMouseEvent) => {
+      if (mode === "rectangle" && rectangleStartRef.current) {
+        const end: Position = [event.lngLat.lng, event.lngLat.lat];
+        setDraftCoordinates(createRectangleCoordinates(rectangleStartRef.current, end));
+        return;
+      }
+
+      if (!selectionDragRef.current || !selection) {
+        return;
+      }
+
+      const nextPointer: Position = [event.lngLat.lng, event.lngLat.lat];
+      const nextCoordinates = applySelectionDrag(selectionDragRef.current, nextPointer);
+
+      if (!nextCoordinates) {
+        return;
+      }
+
+      setSelectionPreview({
+        ...selection,
+        bounds: createBoundingBoxFromCoordinates(nextCoordinates),
+        geometry: {
+          ...selection.geometry,
+          geometry: {
+            ...selection.geometry.geometry,
+            coordinates: [nextCoordinates],
+          },
+        },
+      });
     };
 
     const handleMouseUp = (event: MapMouseEvent) => {
-      if (mode !== "rectangle" || !rectangleStartRef.current) return;
+      if (mode === "rectangle" && rectangleStartRef.current) {
+        const end: Position = [event.lngLat.lng, event.lngLat.lat];
+        const rectangleCoordinates = createRectangleCoordinates(rectangleStartRef.current, end);
 
-      const end: Position = [event.lngLat.lng, event.lngLat.lat];
-      const rectangleCoordinates = createRectangleCoordinates(rectangleStartRef.current, end);
+        rectangleStartRef.current = null;
+        map.dragPan.enable();
+        commitRectangle(rectangleCoordinates);
+        return;
+      }
 
-      rectangleStartRef.current = null;
+      if (!selectionDragRef.current) {
+        return;
+      }
+
+      selectionDragRef.current = null;
       map.dragPan.enable();
-      commitRectangle(rectangleCoordinates);
+      commitSelectionUpdate();
     };
 
     const handleClick = (event: MapMouseEvent) => {
       if (measurementMode !== "none") {
-        addMeasurementPoint([event.lngLat.lng, event.lngLat.lat]);
+        addMeasurementPoint(createTerrainAwarePosition(map, event.lngLat.lng, event.lngLat.lat));
         return;
       }
 
@@ -361,6 +591,7 @@ export default function Map() {
     };
 
     map.on("mousedown", handleMouseDown);
+    map.on("mousedown", handleSelectionDragStart);
     map.on("mousemove", handleMouseMove);
     map.on("mouseup", handleMouseUp);
     map.on("click", handleClick);
@@ -368,6 +599,7 @@ export default function Map() {
 
     return () => {
       map.off("mousedown", handleMouseDown);
+      map.off("mousedown", handleSelectionDragStart);
       map.off("mousemove", handleMouseMove);
       map.off("mouseup", handleMouseUp);
       map.off("click", handleClick);
@@ -376,20 +608,40 @@ export default function Map() {
       map.doubleClickZoom.enable();
       map.getCanvas().style.cursor = "";
     };
-  }, [addMeasurementPoint, commitRectangle, measurementMode, mode, project, setDraftCoordinates, setSelectedObject]);
+  }, [
+    addMeasurementPoint,
+    commitRectangle,
+    commitSelectionUpdate,
+    measurementMode,
+    mode,
+    project,
+    selection,
+    setDraftCoordinates,
+    setSelectedObject,
+    setSelectionPreview,
+  ]);
 
   return (
     <>
       <div
         ref={mapContainer}
-        className="h-full w-full rounded-3xl overflow-hidden"
+        className="h-full w-full overflow-hidden"
+        data-terrain-enabled={terrainDiagnostics.enabled}
+        data-terrain-source={terrainDiagnostics.source}
+        data-terrain-requested-source={terrainDiagnostics.requestedSource}
+        data-terrain-samples={terrainDiagnostics.sampleCount}
+        data-terrain-exaggeration={terrainDiagnostics.exaggeration}
+        data-terrain-uses-maplibre="true"
       />
-      <ThematicDebugOverlay
-        activeTheme={thematicMapType}
-        datasetFeatureCount={thematicMap?.geojson.features.length ?? 0}
-        lastAnalysisTimestamp={lastAnalysisTimestamp ?? project.metadata.updatedAt}
-        sourceHash={thematicSourceHash}
-      />
+      {showDebugOverlay ? (
+        <ThematicDebugOverlay
+          activeTheme={thematicMapType}
+          datasetFeatureCount={thematicMap?.geojson.features.length ?? 0}
+          lastAnalysisTimestamp={lastAnalysisTimestamp ?? project.metadata.updatedAt}
+          sourceHash={thematicSourceHash}
+          pmTilesStats={pmTilesStats}
+        />
+      ) : null}
     </>
   );
 }
@@ -398,7 +650,8 @@ function syncGISLayer(
   map: MapLibreMap,
   layer: GISLayer,
   style: ReturnType<CartographicStyleEngine["compile"]>,
-  suppressedCategories: Set<GISLayer["category"]>
+  suppressedCategories: Set<GISLayer["category"]>,
+  sourceDataHashes: globalThis.Map<string, string>
 ): void {
   if (!layer.data) {
     return;
@@ -406,16 +659,7 @@ function syncGISLayer(
 
   const data = resolveLayerFeatureCollection(layer.data);
   const sourceId = getSourceId(layer.id);
-  const existingSource = map.getSource(sourceId) as GeoJSONSource | undefined;
-
-  if (existingSource) {
-    existingSource.setData(data);
-  } else {
-    map.addSource(sourceId, {
-      type: "geojson",
-      data,
-    });
-  }
+  syncGeoJsonSource(map, sourceId, data, sourceDataHashes);
 
   if (layer.geometryType === "line") {
     syncLineLayer(map, sourceId, layer, style, suppressedCategories.has(layer.category));
@@ -467,20 +711,12 @@ function syncSelectionLayer(
   selection: ReturnType<typeof useSelectionStore.getState>["selection"],
   draftCoordinates: Position[],
   themeId: CartographicThemeId,
-  softenFill: boolean
+  softenFill: boolean,
+  sourceDataHashes: globalThis.Map<string, string>
 ): void {
   const selectionPaint = cartographicStyleEngine.getSelectionPaint(themeId);
   const data = createSelectionFeatureCollection(selection, draftCoordinates);
-  const existingSource = map.getSource(SELECTION_SOURCE_ID) as GeoJSONSource | undefined;
-
-  if (existingSource) {
-    existingSource.setData(data);
-  } else {
-    map.addSource(SELECTION_SOURCE_ID, {
-      type: "geojson",
-      data,
-    });
-  }
+  syncGeoJsonSource(map, SELECTION_SOURCE_ID, data, sourceDataHashes);
 
   if (!map.getLayer(SELECTION_FILL_LAYER_ID)) {
     map.addLayer({
@@ -507,14 +743,43 @@ function syncSelectionLayer(
       type: "circle",
       source: SELECTION_SOURCE_ID,
       filter: ["==", ["geometry-type"], "Point"],
-      paint: selectionPaint.point,
+      paint: {
+        "circle-color": [
+          "match",
+          ["get", "handleKind"],
+          "rotate",
+          "#F97316",
+          String(selectionPaint.point["circle-color"] ?? "#229ED9"),
+        ],
+        "circle-radius": [
+          "match",
+          ["get", "handleKind"],
+          "corner",
+          6,
+          "edge",
+          5,
+          "rotate",
+          5.5,
+          "vertex",
+          5,
+          4,
+        ],
+        "circle-stroke-color": "#FFFFFF",
+        "circle-stroke-width": 2,
+      },
     });
   }
 
-  map.setPaintProperty(SELECTION_FILL_LAYER_ID, "fill-color", selectionPaint.fill["fill-color"]);
-  map.setPaintProperty(SELECTION_FILL_LAYER_ID, "fill-opacity", softenFill ? 0.05 : 0.16);
-  map.setPaintProperty(SELECTION_LINE_LAYER_ID, "line-color", selectionPaint.line["line-color"]);
-  map.setPaintProperty(SELECTION_POINT_LAYER_ID, "circle-color", selectionPaint.point["circle-color"]);
+  setPaintPropertyIfChanged(map, SELECTION_FILL_LAYER_ID, "fill-color", selectionPaint.fill["fill-color"]);
+  setPaintPropertyIfChanged(map, SELECTION_FILL_LAYER_ID, "fill-opacity", softenFill ? 0.05 : 0.16);
+  setPaintPropertyIfChanged(map, SELECTION_LINE_LAYER_ID, "line-color", selectionPaint.line["line-color"]);
+  setPaintPropertyIfChanged(map, SELECTION_POINT_LAYER_ID, "circle-color", [
+    "match",
+    ["get", "handleKind"],
+    "rotate",
+    "#F97316",
+    String(selectionPaint.point["circle-color"] ?? "#229ED9"),
+  ]);
 }
 
 function syncThematicLayer(
@@ -522,26 +787,21 @@ function syncThematicLayer(
   thematicMap: ThematicMapDefinition | null,
   sourceHash: string,
   analysisLayerOpacity: number,
-  forceRecreate = false
+  forceRecreate = false,
+  sourceDataHashes: globalThis.Map<string, string>
 ): void {
   if (!thematicMap) {
     removeThematicLayer(map);
     return;
   }
 
-  void forceRecreate;
+  if (forceRecreate) {
+    removeThematicLayer(map);
+    sourceDataHashes.delete(THEMATIC_SOURCE_ID);
+  }
 
   const renderData = createRenderableThematicGeoJson(thematicMap, sourceHash);
-  const existingSource = map.getSource(THEMATIC_SOURCE_ID) as GeoJSONSource | undefined;
-
-  if (existingSource) {
-    existingSource.setData(renderData);
-  } else {
-    map.addSource(THEMATIC_SOURCE_ID, {
-      type: "geojson",
-      data: renderData,
-    });
-  }
+  syncGeoJsonSource(map, THEMATIC_SOURCE_ID, renderData, sourceDataHashes, sourceHash);
 
   if (!map.getLayer(THEMATIC_FILL_LAYER_ID)) {
     map.addLayer({
@@ -585,25 +845,31 @@ function syncThematicLayer(
     });
   }
 
-  map.setPaintProperty(THEMATIC_FILL_LAYER_ID, "fill-color", [
+  setPaintPropertyIfChanged(map, THEMATIC_FILL_LAYER_ID, "fill-color", [
     "coalesce",
     ["get", thematicMap.style.fillColorProperty],
     "#229ED9",
   ]);
-  map.setPaintProperty(THEMATIC_FILL_LAYER_ID, "fill-opacity", thematicMap.style.fillOpacity * analysisLayerOpacity);
-  map.setPaintProperty(THEMATIC_LINE_LAYER_ID, "line-color", [
+  setPaintPropertyIfChanged(
+    map,
+    THEMATIC_FILL_LAYER_ID,
+    "fill-opacity",
+    thematicMap.style.fillOpacity * analysisLayerOpacity
+  );
+  setPaintPropertyIfChanged(map, THEMATIC_LINE_LAYER_ID, "line-color", [
     "coalesce",
     ["get", thematicMap.style.lineColorProperty],
     "#1D8CC2",
   ]);
-  map.setPaintProperty(THEMATIC_LINE_LAYER_ID, "line-width", thematicMap.style.lineWidth);
-  map.setPaintProperty(THEMATIC_LINE_LAYER_ID, "line-opacity", thematicMap.style.lineOpacity);
-  map.setPaintProperty(THEMATIC_POINT_LAYER_ID, "circle-color", [
+  setPaintPropertyIfChanged(map, THEMATIC_LINE_LAYER_ID, "line-width", thematicMap.style.lineWidth);
+  setPaintPropertyIfChanged(map, THEMATIC_LINE_LAYER_ID, "line-opacity", thematicMap.style.lineOpacity);
+  setPaintPropertyIfChanged(map, THEMATIC_POINT_LAYER_ID, "circle-color", [
     "coalesce",
     ["get", "renderColor"],
     "#F97316",
   ]);
-  map.setPaintProperty(
+  setPaintPropertyIfChanged(
+    map,
     THEMATIC_POINT_LAYER_ID,
     "circle-opacity",
     Math.min(0.95, thematicMap.style.fillOpacity * analysisLayerOpacity)
@@ -627,12 +893,500 @@ function removeThematicLayer(map: MapLibreMap): void {
   }
 }
 
+function syncThreeDThematicMap(
+  map: MapLibreMap,
+  project: FormiqProjectData,
+  threeDMap: ThreeDRenderableMap,
+  zoneOpacity: number,
+  visible: boolean,
+  visualStyle: "gis" | "presentation",
+  sourceDataHashes: globalThis.Map<string, string>
+): void {
+  const presentation = visualStyle === "presentation";
+  syncMapLibreTerrain(map, project, visible);
+
+  if (map.getLayer("formiq-basemap")) {
+    setPaintPropertyIfChanged(map, "formiq-basemap", "raster-opacity", presentation && visible ? 0.18 : 0.9);
+    setPaintPropertyIfChanged(map, "formiq-basemap", "raster-saturation", presentation && visible ? -1 : -0.15);
+    setPaintPropertyIfChanged(map, "formiq-basemap", "raster-contrast", presentation && visible ? -0.1 : 0);
+    setPaintPropertyIfChanged(map, "formiq-basemap", "raster-brightness-min", presentation && visible ? 0.72 : 0);
+    setPaintPropertyIfChanged(map, "formiq-basemap", "raster-brightness-max", 1);
+  }
+
+  syncGeoJsonSource(map, THREE_D_PRESENTATION_WASH_SOURCE_ID, createPresentationWashGeoJson(), sourceDataHashes);
+  syncGeoJsonSource(map, THREE_D_BUILDINGS_SOURCE_ID, threeDMap.buildings, sourceDataHashes);
+  syncGeoJsonSource(map, THREE_D_ZONES_SOURCE_ID, threeDMap.zones, sourceDataHashes);
+  syncGeoJsonSource(map, THREE_D_ROUTES_SOURCE_ID, threeDMap.routes, sourceDataHashes);
+  syncGeoJsonSource(map, THREE_D_POI_SOURCE_ID, threeDMap.poi, sourceDataHashes);
+  syncGeoJsonSource(map, THREE_D_TERRAIN_SOURCE_ID, threeDMap.terrain, sourceDataHashes);
+  syncGeoJsonSource(map, THREE_D_TERRITORY_BOUNDARY_SOURCE_ID, threeDMap.territoryBoundary, sourceDataHashes);
+
+  if (!map.getLayer(THREE_D_PRESENTATION_WASH_LAYER_ID)) {
+    map.addLayer({
+      id: THREE_D_PRESENTATION_WASH_LAYER_ID,
+      type: "fill",
+      source: THREE_D_PRESENTATION_WASH_SOURCE_ID,
+      paint: {
+        "fill-color": "#FFFFFF",
+        "fill-opacity": 0.58,
+      },
+    });
+  }
+
+  if (!map.getLayer(THREE_D_ZONES_LAYER_ID)) {
+    map.addLayer({
+      id: THREE_D_ZONES_LAYER_ID,
+      type: "fill",
+      source: THREE_D_ZONES_SOURCE_ID,
+      paint: {
+        "fill-color": ["coalesce", ["get", "renderColor"], "#86EFAC"],
+        "fill-opacity": zoneOpacity,
+      },
+    });
+  }
+
+  if (!map.getLayer(THREE_D_ZONE_OUTLINE_LAYER_ID)) {
+    map.addLayer({
+      id: THREE_D_ZONE_OUTLINE_LAYER_ID,
+      type: "line",
+      source: THREE_D_ZONES_SOURCE_ID,
+      paint: {
+        "line-color": ["coalesce", ["get", "outlineColor"], "#22C55E"],
+        "line-width": 0.8,
+        "line-opacity": 0.72,
+      },
+    });
+  }
+
+  if (!map.getLayer(THREE_D_ROUTES_LAYER_ID)) {
+    map.addLayer({
+      id: THREE_D_ROUTES_LAYER_ID,
+      type: "line",
+      source: THREE_D_ROUTES_SOURCE_ID,
+      layout: {
+        "line-cap": "round",
+        "line-join": "round",
+      },
+      paint: {
+        "line-color": ["coalesce", ["get", "renderColor"], "#2563EB"],
+        "line-width": ["coalesce", ["get", "routeWidth"], 4],
+        "line-opacity": presentation ? 0.78 : 0.92,
+      },
+    });
+  }
+
+  if (!map.getLayer(THREE_D_TERRITORY_BOUNDARY_LAYER_ID)) {
+    map.addLayer({
+      id: THREE_D_TERRITORY_BOUNDARY_LAYER_ID,
+      type: "line",
+      source: THREE_D_TERRITORY_BOUNDARY_SOURCE_ID,
+      layout: {
+        "line-cap": "round",
+        "line-join": "round",
+      },
+      paint: {
+        "line-color": presentation ? "#3F3A35" : "#374151",
+        "line-width": presentation ? 1.4 : 1.2,
+        "line-opacity": presentation ? 0.86 : 0.78,
+        "line-dasharray": [2, 1.2],
+      },
+    });
+  }
+
+  if (!map.getLayer(THREE_D_BUILDINGS_LAYER_ID)) {
+    map.addLayer({
+      id: THREE_D_BUILDINGS_LAYER_ID,
+      type: "fill-extrusion",
+      source: THREE_D_BUILDINGS_SOURCE_ID,
+      paint: {
+        "fill-extrusion-color": ["coalesce", ["get", "renderColor"], "#F8FAFC"],
+        "fill-extrusion-height": ["coalesce", ["get", "renderHeight"], 8],
+        "fill-extrusion-base": 0,
+        "fill-extrusion-opacity": presentation ? 0.94 : 0.92,
+        "fill-extrusion-vertical-gradient": true,
+      },
+    });
+  }
+
+  if (!map.getLayer(THREE_D_BUILDING_OUTLINE_LAYER_ID)) {
+    map.addLayer({
+      id: THREE_D_BUILDING_OUTLINE_LAYER_ID,
+      type: "line",
+      source: THREE_D_BUILDINGS_SOURCE_ID,
+      paint: {
+        "line-color": ["coalesce", ["get", "outlineColor"], "#94A3B8"],
+        "line-width": presentation ? 0.55 : 0.45,
+        "line-opacity": presentation ? 0.62 : 0.75,
+      },
+    });
+  }
+
+  if (!map.getLayer(THREE_D_HEIGHT_LABELS_LAYER_ID)) {
+    map.addLayer({
+      id: THREE_D_HEIGHT_LABELS_LAYER_ID,
+      type: "symbol",
+      source: THREE_D_BUILDINGS_SOURCE_ID,
+      layout: {
+        "text-field": ["get", "heightLabel"],
+        "text-size": presentation ? 10 : 11,
+        "text-anchor": "center",
+        "text-allow-overlap": false,
+      },
+      paint: {
+        "text-color": presentation ? "#64748B" : "#334155",
+        "text-halo-color": "#FFFFFF",
+        "text-halo-width": 1.2,
+      },
+    });
+  }
+
+  if (!map.getLayer(THREE_D_TERRAIN_LAYER_ID)) {
+    map.addLayer({
+      id: THREE_D_TERRAIN_LAYER_ID,
+      type: "circle",
+      source: THREE_D_TERRAIN_SOURCE_ID,
+      paint: {
+        "circle-color": ["coalesce", ["get", "renderColor"], "#A7F3D0"],
+        "circle-radius": presentation ? 2.4 : 3,
+        "circle-opacity": presentation ? 0.5 : 0.72,
+        "circle-stroke-color": "#FFFFFF",
+        "circle-stroke-width": 1,
+      },
+    });
+  }
+
+  if (!map.getLayer(THREE_D_POI_LAYER_ID)) {
+    map.addLayer({
+      id: THREE_D_POI_LAYER_ID,
+      type: "symbol",
+      source: THREE_D_POI_SOURCE_ID,
+      layout: {
+        "text-field": ["case", ["boolean", ["get", "callout"], false], ["get", "label"], "●"],
+        "text-size": ["case", ["boolean", ["get", "callout"], false], presentation ? 10 : 11, presentation ? 13 : 18],
+        "text-anchor": ["case", ["boolean", ["get", "callout"], false], "bottom", "center"],
+        "text-offset": ["case", ["boolean", ["get", "callout"], false], ["literal", [0, -0.8]], ["literal", [0, 0]]],
+        "text-allow-overlap": false,
+      },
+      paint: {
+        "text-color": ["coalesce", ["get", "renderColor"], "#F97316"],
+        "text-halo-color": "#FFFFFF",
+        "text-halo-width": 1.2,
+      },
+    });
+  }
+
+  setPaintPropertyIfChanged(map, THREE_D_PRESENTATION_WASH_LAYER_ID, "fill-opacity", presentation ? 0.58 : 0);
+  setPaintPropertyIfChanged(map, THREE_D_ZONES_LAYER_ID, "fill-color", ["coalesce", ["get", "renderColor"], "#86EFAC"]);
+  setPaintPropertyIfChanged(map, THREE_D_ZONES_LAYER_ID, "fill-opacity", presentation ? Math.min(zoneOpacity, 0.34) : zoneOpacity);
+  setPaintPropertyIfChanged(map, THREE_D_TERRITORY_BOUNDARY_LAYER_ID, "line-color", presentation ? "#3F3A35" : "#374151");
+  setPaintPropertyIfChanged(map, THREE_D_TERRITORY_BOUNDARY_LAYER_ID, "line-opacity", presentation ? 0.86 : 0.78);
+  setPaintPropertyIfChanged(map, THREE_D_ROUTES_LAYER_ID, "line-color", ["coalesce", ["get", "renderColor"], "#2563EB"]);
+  setPaintPropertyIfChanged(map, THREE_D_ROUTES_LAYER_ID, "line-width", ["coalesce", ["get", "routeWidth"], 4]);
+  setPaintPropertyIfChanged(map, THREE_D_ROUTES_LAYER_ID, "line-opacity", presentation ? 0.78 : 0.92);
+  setPaintPropertyIfChanged(map, THREE_D_BUILDINGS_LAYER_ID, "fill-extrusion-color", ["coalesce", ["get", "renderColor"], "#F8FAFC"]);
+  setPaintPropertyIfChanged(map, THREE_D_BUILDINGS_LAYER_ID, "fill-extrusion-height", ["coalesce", ["get", "renderHeight"], 8]);
+  setPaintPropertyIfChanged(map, THREE_D_BUILDINGS_LAYER_ID, "fill-extrusion-base", 0);
+  setPaintPropertyIfChanged(map, THREE_D_BUILDINGS_LAYER_ID, "fill-extrusion-opacity", presentation ? 0.94 : 0.92);
+  setLayoutPropertyIfChanged(map, THREE_D_HEIGHT_LABELS_LAYER_ID, "text-size", presentation ? 10 : 11);
+  setPaintPropertyIfChanged(map, THREE_D_HEIGHT_LABELS_LAYER_ID, "text-color", presentation ? "#64748B" : "#334155");
+  setLayoutPropertyIfChanged(map, THREE_D_POI_LAYER_ID, "text-size", [
+    "case",
+    ["boolean", ["get", "callout"], false],
+    presentation ? 10 : 11,
+    presentation ? 13 : 18,
+  ]);
+
+  [
+    THREE_D_PRESENTATION_WASH_LAYER_ID,
+    THREE_D_ZONES_LAYER_ID,
+    THREE_D_ZONE_OUTLINE_LAYER_ID,
+    THREE_D_ROUTES_LAYER_ID,
+    THREE_D_TERRITORY_BOUNDARY_LAYER_ID,
+    THREE_D_BUILDINGS_LAYER_ID,
+    THREE_D_BUILDING_OUTLINE_LAYER_ID,
+    THREE_D_HEIGHT_LABELS_LAYER_ID,
+    THREE_D_POI_LAYER_ID,
+    THREE_D_TERRAIN_LAYER_ID,
+  ].forEach((layerId) =>
+    setLayerVisibility(
+      map,
+      layerId,
+      visible &&
+        (layerId !== THREE_D_PRESENTATION_WASH_LAYER_ID || presentation) &&
+        (layerId !== THREE_D_HEIGHT_LABELS_LAYER_ID || project.settings.threeD.showHeights)
+    )
+  );
+
+  map.triggerRepaint();
+}
+
+function syncMapLibreTerrain(
+  map: MapLibreMap,
+  project: FormiqProjectData,
+  visible: boolean
+): void {
+  const terrainSettings = project.settings.threeD.terrain;
+  const effectiveTerrainSource = getEffectiveTerrainSource(project, terrainSettings.source);
+  const shouldEnableTerrain =
+    visible &&
+    project.settings.threeD.showTerrain &&
+    terrainSettings.enabled &&
+    effectiveTerrainSource !== "none";
+
+  if (!shouldEnableTerrain) {
+    try {
+      map.setTerrain(null);
+    } catch {
+      // The map can reject terrain changes while its style is being rebuilt.
+    }
+    return;
+  }
+
+  const mapLibreTerrainSourceId = getMapLibreTerrainSourceId(effectiveTerrainSource);
+
+  if (!map.getSource(mapLibreTerrainSourceId)) {
+    map.addSource(mapLibreTerrainSourceId, {
+      type: "raster-dem",
+      tiles: [getTerrainRasterDemTileUrl(effectiveTerrainSource)],
+      tileSize: 256,
+      minzoom: 0,
+      maxzoom: 15,
+      encoding: getTerrainRasterDemEncoding(),
+    });
+  }
+
+  try {
+    map.setTerrain({
+      source: mapLibreTerrainSourceId,
+      exaggeration: terrainSettings.exaggeration,
+    });
+  } catch {
+    // Style/source updates can be temporarily unavailable during mode switches.
+  }
+}
+
+function getMapLibreTerrainSourceId(source: TerrainSourceId): string {
+  return `${MAPLIBRE_TERRAIN_SOURCE_ID_PREFIX}-${source}`;
+}
+
+function getTerrainDiagnostics(
+  project: FormiqProjectData,
+  threeDMap: ThreeDRenderableMap,
+  isThreeDMode: boolean
+) {
+  const terrainSettings = project.settings.threeD.terrain;
+  const effectiveTerrainSource = getEffectiveTerrainSource(project, terrainSettings.source);
+  const enabled =
+    isThreeDMode &&
+    project.settings.threeD.showTerrain &&
+    terrainSettings.enabled &&
+    effectiveTerrainSource !== "none";
+
+  return {
+    enabled: String(enabled),
+    source: effectiveTerrainSource,
+    requestedSource: terrainSettings.source,
+    sampleCount: String(threeDMap.terrainSummary?.sampleCount ?? 0),
+    exaggeration: String(terrainSettings.exaggeration),
+  };
+}
+
+function getEffectiveTerrainSource(
+  project: FormiqProjectData,
+  requestedSource: TerrainSourceId
+): TerrainSourceId {
+  if (!isOpenTopographyTerrainSource(requestedSource)) {
+    return requestedSource;
+  }
+
+  const openTopographyState = project.fusion?.sourceStates.find(
+    (state) => state.source === "copernicus-dem"
+  );
+  const isOpenTopographyUnavailable =
+    openTopographyState?.status === "rate-limited" ||
+    openTopographyState?.status === "offline" ||
+    openTopographyState?.status === "error";
+
+  if (isOpenTopographyUnavailable && process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN) {
+    return "mapbox-terrain-rgb";
+  }
+
+  return requestedSource;
+}
+
+function isOpenTopographyTerrainSource(source: TerrainSourceId): boolean {
+  return source === "copernicus-dem" || source === "opentopography";
+}
+
+function getTerrainRasterDemTileUrl(source: TerrainSourceId): string {
+  if (source === "mapbox-terrain-rgb") {
+    const token = process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN;
+    return token
+      ? `https://api.mapbox.com/v4/mapbox.terrain-rgb/{z}/{x}/{y}.pngraw?access_token=${encodeURIComponent(token)}`
+      : "/api/data/terrain-rgb/{z}/{x}/{y}?source=opentopography&demType=COP30";
+  }
+
+  if (source === "local-heightmap") {
+    return "/api/data/terrain-rgb/{z}/{x}/{y}?source=local-heightmap";
+  }
+
+  return "/api/data/terrain-rgb/{z}/{x}/{y}?source=opentopography&demType=COP30";
+}
+
+function getTerrainRasterDemEncoding(): "mapbox" {
+  return "mapbox";
+}
+
+function createTerrainAwarePosition(
+  map: MapLibreMap,
+  longitude: number,
+  latitude: number
+): Position {
+  const elevation = getMapTerrainElevation(map, longitude, latitude);
+
+  return typeof elevation === "number" ? [longitude, latitude, elevation] : [longitude, latitude];
+}
+
+function getMapTerrainElevation(
+  map: MapLibreMap,
+  longitude: number,
+  latitude: number
+): number | null {
+  try {
+    const candidate = map.queryTerrainElevation([longitude, latitude]);
+    return typeof candidate === "number" && Number.isFinite(candidate) ? candidate : null;
+  } catch {
+    return null;
+  }
+}
+
+function createPresentationWashGeoJson(): FeatureCollection<Geometry, GeoJsonProperties> {
+  return {
+    type: "FeatureCollection",
+    features: [
+      {
+        type: "Feature",
+        properties: {},
+        geometry: {
+          type: "Polygon",
+          coordinates: [[[-180, -85], [180, -85], [180, 85], [-180, 85], [-180, -85]]],
+        },
+      },
+    ],
+  };
+}
+
+function syncGeoJsonSource(
+  map: MapLibreMap,
+  sourceId: string,
+  data: FeatureCollection<Geometry, GeoJsonProperties>,
+  sourceDataHashes: globalThis.Map<string, string>,
+  dataHash = createGeoJsonSourceHash(data)
+): void {
+  const existingSource = map.getSource(sourceId) as GeoJSONSource | undefined;
+
+  if (existingSource) {
+    if (sourceDataHashes.get(sourceId) !== dataHash) {
+      existingSource.setData(data);
+      sourceDataHashes.set(sourceId, dataHash);
+    }
+    return;
+  }
+
+  map.addSource(sourceId, {
+    type: "geojson",
+    data,
+    ...getGeoJsonSourcePerformanceOptions(data),
+  });
+  sourceDataHashes.set(sourceId, dataHash);
+}
+
+function isMapStyleAvailable(map: MapLibreMap): boolean {
+  try {
+    return Boolean(map.getStyle());
+  } catch {
+    return false;
+  }
+}
+
 function setLayerVisibility(map: MapLibreMap, layerId: string, visible: boolean): void {
   if (!map.getLayer(layerId)) {
     return;
   }
 
-  map.setLayoutProperty(layerId, "visibility", visible ? "visible" : "none");
+  setLayoutPropertyIfChanged(map, layerId, "visibility", visible ? "visible" : "none");
+}
+
+function setPaintPropertyIfChanged(
+  map: MapLibreMap,
+  layerId: string,
+  property: string,
+  value: unknown
+): void {
+  if (!map.getLayer(layerId)) {
+    return;
+  }
+
+  if (areMapLibreValuesEqual(map.getPaintProperty(layerId, property), value)) {
+    return;
+  }
+
+  map.setPaintProperty(layerId, property, value);
+}
+
+function setLayoutPropertyIfChanged(
+  map: MapLibreMap,
+  layerId: string,
+  property: string,
+  value: unknown
+): void {
+  if (!map.getLayer(layerId)) {
+    return;
+  }
+
+  if (areMapLibreValuesEqual(map.getLayoutProperty(layerId, property), value)) {
+    return;
+  }
+
+  map.setLayoutProperty(layerId, property, value);
+}
+
+function areMapLibreValuesEqual(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) {
+    return true;
+  }
+
+  if (typeof left !== "object" || typeof right !== "object" || left === null || right === null) {
+    return false;
+  }
+
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function createGeoJsonSourceHash(data: FeatureCollection<Geometry, GeoJsonProperties>): string {
+  return JSON.stringify(data);
+}
+
+function getGeoJsonSourcePerformanceOptions(
+  data: FeatureCollection<Geometry, GeoJsonProperties>
+): Record<string, unknown> {
+  if (!isPointOnlyFeatureCollection(data)) {
+    return {};
+  }
+
+  if (data.features.length >= 1000) {
+    return {
+      maxzoom: 14,
+    };
+  }
+
+  return {
+    maxzoom: 16,
+  };
+}
+
+function isPointOnlyFeatureCollection(data: FeatureCollection<Geometry, GeoJsonProperties>): boolean {
+  return data.features.length > 0 && data.features.every((feature) => feature.geometry.type === "Point");
 }
 
 function getCachedThematicMap(
@@ -690,11 +1444,13 @@ function ThematicDebugOverlay({
   datasetFeatureCount,
   lastAnalysisTimestamp,
   sourceHash,
+  pmTilesStats,
 }: {
   activeTheme: string;
   datasetFeatureCount: number;
   lastAnalysisTimestamp: string;
   sourceHash: string;
+  pmTilesStats: PMTilesPresentationStats | null;
 }) {
   return (
     <aside
@@ -706,6 +1462,19 @@ function ThematicDebugOverlay({
       <DebugMetric label="datasetFeatureCount" value={datasetFeatureCount.toLocaleString("ru-RU")} />
       <DebugMetric label="lastAnalysisTimestamp" value={lastAnalysisTimestamp} />
       <DebugMetric label="sourceHash" value={compactHash(sourceHash)} />
+      {pmTilesStats ? (
+        <>
+          <div className="mt-3 border-t border-[#CBD5E1] pt-2 font-bold text-[#111827]">PMTiles</div>
+          <DebugMetric label="Loaded Tiles" value={pmTilesStats.loadedTiles.toLocaleString("ru-RU")} />
+          <DebugMetric label="Visible Tiles" value={pmTilesStats.visibleTiles.toLocaleString("ru-RU")} />
+          <DebugMetric label="Cached Tiles" value={pmTilesStats.cachedTiles.toLocaleString("ru-RU")} />
+          <DebugMetric label="Loading Tiles" value={pmTilesStats.loadingTiles.toLocaleString("ru-RU")} />
+          <DebugMetric label="Decoded Features" value={pmTilesStats.decodedFeatures.toLocaleString("ru-RU")} />
+          <DebugMetric label="Frame Time" value={`${pmTilesStats.frameTimeMs} ms`} />
+          <DebugMetric label="FPS" value={pmTilesStats.fps.toLocaleString("ru-RU")} />
+          <DebugMetric label="Memory" value={pmTilesStats.memoryMb === null ? "n/a" : `${pmTilesStats.memoryMb} MB`} />
+        </>
+      ) : null}
     </aside>
   );
 }
@@ -761,15 +1530,15 @@ function syncFillLayer(
   }
 
   Object.entries(fillPaint).forEach(([property, value]) => {
-    map.setPaintProperty(fillLayerId, property, value);
+    setPaintPropertyIfChanged(map, fillLayerId, property, value);
   });
   Object.entries(strokePaint).forEach(([property, value]) => {
-    map.setPaintProperty(strokeLayerId, property, value);
+    setPaintPropertyIfChanged(map, strokeLayerId, property, value);
   });
-  map.setPaintProperty(fillLayerId, "fill-opacity", layer.opacity);
-  map.setPaintProperty(strokeLayerId, "line-opacity", layer.opacity);
-  map.setLayoutProperty(fillLayerId, "visibility", visibility);
-  map.setLayoutProperty(strokeLayerId, "visibility", visibility);
+  setPaintPropertyIfChanged(map, fillLayerId, "fill-opacity", layer.opacity);
+  setPaintPropertyIfChanged(map, strokeLayerId, "line-opacity", layer.opacity);
+  setLayoutPropertyIfChanged(map, fillLayerId, "visibility", visibility);
+  setLayoutPropertyIfChanged(map, strokeLayerId, "visibility", visibility);
 }
 
 function syncLineLayer(
@@ -809,15 +1578,15 @@ function syncLineLayer(
   }
 
   Object.entries(style.roadCasing).forEach(([property, value]) => {
-    map.setPaintProperty(casingLayerId, property, value);
+    setPaintPropertyIfChanged(map, casingLayerId, property, value);
   });
   Object.entries(style.roadLine).forEach(([property, value]) => {
-    map.setPaintProperty(lineLayerId, property, value);
+    setPaintPropertyIfChanged(map, lineLayerId, property, value);
   });
-  map.setPaintProperty(casingLayerId, "line-opacity", Math.min(layer.opacity, 0.9));
-  map.setPaintProperty(lineLayerId, "line-opacity", layer.opacity);
-  map.setLayoutProperty(casingLayerId, "visibility", layer.visible && !suppressed ? "visible" : "none");
-  map.setLayoutProperty(lineLayerId, "visibility", layer.visible && !suppressed ? "visible" : "none");
+  setPaintPropertyIfChanged(map, casingLayerId, "line-opacity", Math.min(layer.opacity, 0.9));
+  setPaintPropertyIfChanged(map, lineLayerId, "line-opacity", layer.opacity);
+  setLayoutPropertyIfChanged(map, casingLayerId, "visibility", layer.visible && !suppressed ? "visible" : "none");
+  setLayoutPropertyIfChanged(map, lineLayerId, "visibility", layer.visible && !suppressed ? "visible" : "none");
 }
 
 function syncPointLayer(
@@ -843,9 +1612,9 @@ function syncPointLayer(
     });
   }
 
-  map.setPaintProperty(pointLayerId, "circle-color", layer.style.fillColor ?? "#F97316");
-  map.setPaintProperty(pointLayerId, "circle-opacity", layer.opacity);
-  map.setLayoutProperty(pointLayerId, "visibility", layer.visible && !suppressed ? "visible" : "none");
+  setPaintPropertyIfChanged(map, pointLayerId, "circle-color", layer.style.fillColor ?? "#F97316");
+  setPaintPropertyIfChanged(map, pointLayerId, "circle-opacity", layer.opacity);
+  setLayoutPropertyIfChanged(map, pointLayerId, "visibility", layer.visible && !suppressed ? "visible" : "none");
 }
 
 function resolveFillPaint(
@@ -877,6 +1646,124 @@ function resolveStrokePaint(
 
 function getSourceId(layerId: string): string {
   return `formiq-${layerId}`;
+}
+
+function resolveSelectionDragState(
+  map: MapLibreMap,
+  event: MapMouseEvent,
+  selection: NonNullable<ReturnType<typeof useSelectionStore.getState>["selection"]>
+): SelectionDragState | null {
+  if (
+    !map.getLayer(SELECTION_POINT_LAYER_ID) ||
+    !map.getLayer(SELECTION_FILL_LAYER_ID) ||
+    !map.getLayer(SELECTION_LINE_LAYER_ID)
+  ) {
+    return null;
+  }
+
+  const features = map.queryRenderedFeatures(event.point, {
+    layers: [SELECTION_POINT_LAYER_ID, SELECTION_FILL_LAYER_ID, SELECTION_LINE_LAYER_ID],
+  });
+  const handleFeature = features.find(
+    (feature) => feature.layer.id === SELECTION_POINT_LAYER_ID && feature.properties?.featureType === "selection-handle"
+  );
+  const pointer: Position = [event.lngLat.lng, event.lngLat.lat];
+  const initialCoordinates = toPolygonCoordinates(selection);
+
+  if (handleFeature) {
+    const handleId = String(handleFeature.properties?.handleId ?? "");
+    const handleKind = String(handleFeature.properties?.handleKind ?? "");
+    const vertexIndex = toOptionalNumber(handleFeature.properties?.vertexIndex);
+
+    if (selection.shape === "rectangle" && handleKind === "rotate") {
+      return {
+        kind: "rotate",
+        startPointer: pointer,
+        initialCoordinates,
+      };
+    }
+
+    if (selection.shape === "rectangle") {
+      return {
+        kind: "resize",
+        startPointer: pointer,
+        initialCoordinates,
+        handleId,
+      };
+    }
+
+    if (handleKind === "vertex" && typeof vertexIndex === "number") {
+      return {
+        kind: "vertex",
+        startPointer: pointer,
+        initialCoordinates,
+        vertexIndex,
+      };
+    }
+  }
+
+  const selectionFeature = features.find((feature) => feature.properties?.featureType === "selection");
+
+  if (!selectionFeature) {
+    return null;
+  }
+
+  return {
+    kind: "move",
+    startPointer: pointer,
+    initialCoordinates,
+  };
+}
+
+function applySelectionDrag(state: SelectionDragState, nextPointer: Position): Position[] | null {
+  switch (state.kind) {
+    case "move":
+      return translateSelectionCoordinates(
+        state.initialCoordinates,
+        nextPointer[0] - state.startPointer[0],
+        nextPointer[1] - state.startPointer[1]
+      );
+    case "rotate":
+      return rotateRectangleCoordinates(
+        state.initialCoordinates,
+        getRectangleRotationAngle(state.initialCoordinates, state.startPointer, nextPointer)
+      );
+    case "resize":
+      return state.handleId
+        ? resizeRectangleCoordinates(state.initialCoordinates, state.handleId, nextPointer)
+        : state.initialCoordinates;
+    case "vertex":
+      return typeof state.vertexIndex === "number"
+        ? updatePolygonVertex(state.initialCoordinates, state.vertexIndex, nextPointer)
+        : state.initialCoordinates;
+    default:
+      return null;
+  }
+}
+
+function createBoundingBoxFromCoordinates(coordinates: Position[]) {
+  const longitudes = coordinates.map((coordinate) => coordinate[0]);
+  const latitudes = coordinates.map((coordinate) => coordinate[1]);
+
+  return {
+    west: Math.min(...longitudes),
+    south: Math.min(...latitudes),
+    east: Math.max(...longitudes),
+    north: Math.max(...latitudes),
+  };
+}
+
+function toOptionalNumber(value: unknown): number | undefined {
+  if (typeof value === "number") {
+    return value;
+  }
+
+  if (typeof value === "string" && value.length > 0) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+
+  return undefined;
 }
 
 function resolveSelectedObject(
@@ -1103,6 +1990,7 @@ function formatEntityTypeLabel(type: string): string {
 
 function formatCategoryLabel(value: string): string {
   const labels: Record<string, string> = {
+    boundary: "Граница",
     residential: "Жилая",
     commercial: "Коммерческая",
     industrial: "Производственная",
@@ -1147,6 +2035,10 @@ function getSuppressedBaseCategories(
   thematicMapType: string,
   workspaceMode: string
 ): Set<GISLayer["category"]> {
+  if (workspaceMode === "3d") {
+    return new Set(["buildings", "roads", "green", "water"]);
+  }
+
   if (workspaceMode === "analysis") {
     if (["floors", "age", "function", "density"].includes(thematicMapType)) {
       return new Set(["buildings", "roads", "green", "water"]);

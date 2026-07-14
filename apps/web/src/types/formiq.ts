@@ -13,6 +13,14 @@ export type FormiqGeometryType = "point" | "line" | "polygon";
 export type ProjectWorkspaceMode = "architecture" | "analysis" | "presentation" | "3d";
 export type CartographicThemeId = "light" | "dark" | "blueprint" | "print";
 export type RoadWidthMode = "class-based" | "real-width" | "custom";
+export type ThreeDMapType =
+  | "white-model"
+  | "function-zoning"
+  | "floors"
+  | "age"
+  | "mobility-routes"
+  | "green-water"
+  | "presentation-mixed";
 export type ProjectUnits = "m";
 export type TerritoryType = "working-area" | "context-area" | "study-area";
 export type SemanticCategoryValue = string;
@@ -24,17 +32,22 @@ export type DataSourceKind =
   | "gpx"
   | "overture"
   | "microsoft-buildings"
+  | "local-buildings"
+  | "city-geojson"
   | "wikidata"
   | "sentinel-2"
   | "copernicus-dem"
   | "open-topography"
   | "gtfs"
   | "open-weather"
+  | "pmtiles"
   | "manual";
 export type ImportSourceId =
   | "osm"
   | "microsoft-buildings"
   | "overture"
+  | "city-geojson"
+  | "local-buildings"
   | "wikidata"
   | "gtfs"
   | "copernicus-dem"
@@ -366,7 +379,9 @@ export interface ProjectLayerState {
   name: string;
   visible: boolean;
   opacity: number;
-  sourceType: GISImportFormat | RasterSourceType | "osm" | "fusion" | "manual";
+  groupId?: string;
+  locked?: boolean;
+  sourceType: GISImportFormat | RasterSourceType | "osm" | "fusion" | "manual" | "pmtiles";
   removable: boolean;
   order: number;
   category: GISLayerCategory;
@@ -374,7 +389,16 @@ export interface ProjectLayerState {
   source: {
     id: string;
     name: string;
-    format: GISImportFormat | RasterSourceType | "osm" | "overture" | "microsoft-buildings" | "wikidata";
+    format:
+      | GISImportFormat
+      | RasterSourceType
+      | "osm"
+      | "overture"
+      | "microsoft-buildings"
+      | "local-buildings"
+      | "city-geojson"
+      | "wikidata"
+      | "pmtiles";
   };
   data?: FormiqLayerData | FeatureCollection<Geometry, GeoJsonProperties>;
   style: GISLayerStyle;
@@ -395,6 +419,7 @@ export interface FormiqTerritory {
   name: string;
   type: TerritoryType;
   geometry: Feature<Polygon>;
+  shape?: "rectangle" | "polygon";
   bounds: BoundingBox;
   loadingBuffer: TerritoryBuffer;
   analysisSettings: TerritoryAnalysisSettings;
@@ -420,6 +445,159 @@ export interface ProjectDisplaySettings {
   mapCenter: [number, number];
   mapZoom: number;
   showContextPanel: boolean;
+}
+
+export type ThreeDBuildingColorMode = "white" | "function" | "floors" | "age" | "custom";
+export type ThreeDZoneColorMode = "none" | "function" | "green-water" | "custom";
+export type ThreeDRoadMode = "hidden" | "light" | "mobility";
+export type ThreeDPoiMode = "hidden" | "symbols" | "callouts";
+export type ThreeDTerrainMode = "flat" | "points" | "surface-preview" | "mesh";
+export type TerrainSourceId =
+  | "copernicus-dem"
+  | "opentopography"
+  | "mapbox-terrain-rgb"
+  | "local-heightmap"
+  | "local-mesh"
+  | "none";
+
+export interface TerrainSourceProvider {
+  id: TerrainSourceId;
+  name: string;
+  description: string;
+  requiresApiKey: boolean;
+  configured: boolean;
+  status: "connected" | "requires-api-key" | "not-configured" | "no-data" | "error";
+  statusLabel: string;
+  resolutionMeters?: number;
+  supportsMesh: boolean;
+  supportsHeightSamples: boolean;
+  supportsContours: boolean;
+  supportsHillshade: boolean;
+}
+
+export interface ThreeDTerrainLayerSettings {
+  enabled: boolean;
+  source: TerrainSourceId;
+  mode: ThreeDTerrainMode;
+  exaggeration: number;
+  clipToTerritory: boolean;
+  basePlaneElevation: "min" | "average" | "zero";
+}
+
+export interface TerrainMeshDescriptor {
+  id: string;
+  source: TerrainSourceId;
+  uri?: string;
+  bounds?: BoundingBox;
+  vertexCount?: number;
+  faceCount?: number;
+  createdAt: string;
+}
+
+export interface TerrainHeightmapDescriptor {
+  id: string;
+  source: TerrainSourceId;
+  uri?: string;
+  bounds?: BoundingBox;
+  width: number;
+  height: number;
+  minElevation: number | null;
+  maxElevation: number | null;
+  createdAt: string;
+}
+
+export interface TerrainContourDescriptor {
+  id: string;
+  source: TerrainSourceId;
+  intervalMeters: number;
+  geojson: FeatureCollection<Geometry, GeoJsonProperties>;
+  createdAt: string;
+}
+
+export interface ThreeDMapLegendItem {
+  id: string;
+  label: string;
+  color: string;
+  iconId?: string;
+  metadata?: string;
+  count?: number;
+  area?: number;
+  length?: number;
+}
+
+export interface ThreeDMapDefinition {
+  id: ThreeDMapType;
+  title: string;
+  description: string;
+  legend: ThreeDMapLegendItem[];
+  buildingColorMode: ThreeDBuildingColorMode;
+  zoneColorMode: ThreeDZoneColorMode;
+  roadMode: ThreeDRoadMode;
+  poiMode: ThreeDPoiMode;
+  terrainMode: ThreeDTerrainMode;
+}
+
+export interface ThreeDCallout {
+  id: string;
+  iconId: string;
+  label: string;
+  coordinate: [number, number];
+  targetFeatureId?: string;
+  category: string;
+  visible: boolean;
+}
+
+export interface ThreeDExportLayout {
+  title: string;
+  subtitle?: string;
+  legend: ThreeDMapLegendItem[];
+  mapType: ThreeDMapType;
+  includeNorthArrow: boolean;
+  includeScaleBar: boolean;
+  includeSources: boolean;
+  includeDate: boolean;
+}
+
+export interface ProjectThreeDSettings {
+  activeMapType: ThreeDMapType;
+  visualStyle: "gis" | "presentation";
+  showBuildings: boolean;
+  showRoads: boolean;
+  showZones: boolean;
+  showWater: boolean;
+  showVegetation: boolean;
+  showPoi: boolean;
+  showHeights: boolean;
+  showLegend: boolean;
+  showTerrain: boolean;
+  showTerritoryBoundary: boolean;
+  terrain: ThreeDTerrainLayerSettings;
+  semanticColoring: boolean;
+  buildingHeightMultiplier: number;
+  zoneOpacity: number;
+  routeWidth: number;
+  poiMode: ThreeDPoiMode;
+  maxVisiblePoi: number;
+  cameraPreset: "north-west" | "west" | "north" | "top" | "presentation";
+  lightingTime: "09:00" | "12:00" | "15:00" | "18:00";
+  shadows: boolean;
+  flythroughEnabled: boolean;
+  savedViews: Array<{
+    id: string;
+    name: string;
+    preset: "north-west" | "west" | "north" | "top" | "presentation";
+    thumbnail: string;
+  }>;
+  screenshots: Array<{
+    id: string;
+    name: string;
+    createdAt: string;
+    preset: string;
+  }>;
+}
+
+export interface ProjectDebugSettings {
+  enabled: boolean;
 }
 
 export interface ProjectAnalysisSettings {
@@ -523,7 +701,7 @@ export interface UnifiedFeatureCollections {
 
 export interface SourceSyncState {
   source: DataSourceKind;
-  status: "idle" | "loading" | "ready" | "error";
+  status: "ready" | "loading" | "not-configured" | "rate-limited" | "offline" | "error";
   updatedAt: string | null;
   version: string;
   featureCount: number;
@@ -553,6 +731,11 @@ export interface FormiqProjectData {
   description: string;
   city: string;
   author: string;
+  tags: string[];
+  isArchived: boolean;
+  isPinned: boolean;
+  isFavorite: boolean;
+  lastOpenedAt: string | null;
   crs: string;
   units: ProjectUnits;
   territories: FormiqTerritory[];
@@ -561,6 +744,8 @@ export interface FormiqProjectData {
     display: ProjectDisplaySettings;
     analysis: ProjectAnalysisSettings;
     export: ProjectExportSettings;
+    threeD: ProjectThreeDSettings;
+    debug: ProjectDebugSettings;
   };
   dataSources: ProjectDataSource[];
   layers: FormiqLayerData[];

@@ -1,0 +1,27 @@
+[submodule "external/maplibre-gl-js"]
+	path = external/maplibre-gl-js
+	url = https://github.com/maplibre/maplibre-gl-js
+[submodule "external/turf"]
+	path = external/turf
+	url = https://github.com/Turfjs/turf.git
+[submodule "external/pmtiles"]
+	path = external/pmtiles
+	url = https://github.com/protomaps/PMTiles.git
+[submodule "external/tippecanoe"]
+	path = external/tippecanoe
+	url = https://github.com/felt/tippecanoe.git
+[submodule "external/duckdb"]
+	path = external/duckdb
+	url = https://github.com/duckdb/duckdb.git
+[submodule "external/martin"]
+	path = external/martin
+	url = https://github.com/maplibre/martin.git
+[submodule "external/deck.gl"]
+	path = external/deck.gl
+	url = https://github.com/visgl/deck.gl.git
+[submodule "external/cesium"]
+	path = external/cesium
+	url = https://github.com/CesiumGS/cesium.git
+[submodule "design/open-design"]
+	path = design/open-design
+	url = https://github.com/nexu-io/open-design.git

@@ -1,5 +1,7 @@
 import "./globals.css";
+import { Suspense } from "react";
 import ProjectWorkspaceProvider from "@/components/layout";
+import AppFrame from "@/components/navigation";
 
 export default function RootLayout({
   children,
@@ -9,7 +11,11 @@ export default function RootLayout({
   return (
     <html lang="ru">
       <body>
-        <ProjectWorkspaceProvider>{children}</ProjectWorkspaceProvider>
+        <ProjectWorkspaceProvider>
+          <Suspense fallback={null}>
+            <AppFrame>{children}</AppFrame>
+          </Suspense>
+        </ProjectWorkspaceProvider>
       </body>
     </html>
   );

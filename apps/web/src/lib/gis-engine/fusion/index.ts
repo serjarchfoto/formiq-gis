@@ -5,4 +5,7 @@ export * from "./DataFusionEngine";
 export * from "./providers/OSMSourceAdapter";
 export * from "./providers/OvertureSourceAdapter";
 export * from "./providers/MicrosoftBuildingSourceAdapter";
+export * from "./providers/LocalBuildingsSourceAdapter";
+export * from "./providers/CityGeoJsonSourceAdapter";
 export * from "./providers/WikidataSourceAdapter";
+export * from "./providers/CopernicusDemSourceAdapter";

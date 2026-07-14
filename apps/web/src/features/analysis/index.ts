@@ -1,2 +1,1 @@
-export { default } from "./components/TerritoryAnalysisPanel";
-export * from "./territoryAnalysis";
+export { default as AnalysisWorkspace } from "./components/AnalysisWorkspace";

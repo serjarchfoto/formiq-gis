@@ -2,12 +2,21 @@
 
 import { create } from "zustand";
 import type { Feature, Polygon, Position } from "geojson";
+import type { FormiqTerritory } from "@/types/formiq";
 import { useProjectStore } from "@/store/project";
 import type { BoundingBox } from "@/types/gis";
+import {
+  closeRing,
+  convertSelectionShape,
+  createSelectionFromTerritory,
+  createTerritorySelection,
+} from "@/features/selection/selectionGeometry";
 
 export type SelectionMode = "none" | "rectangle" | "polygon";
+export type TerritorySelectionShape = "rectangle" | "polygon";
 
 export interface TerritorySelection {
+  shape: TerritorySelectionShape;
   bounds: BoundingBox;
   geometry: Feature<Polygon>;
 }
@@ -18,8 +27,13 @@ interface SelectionStore {
   draftCoordinates: Position[];
   setMode: (mode: SelectionMode) => void;
   setDraftCoordinates: (coordinates: Position[]) => void;
+  setSelectionPreview: (selection: TerritorySelection | null) => void;
+  syncSelectionFromProject: (territory: FormiqTerritory | null) => void;
   commitRectangle: (coordinates: Position[]) => void;
   commitPolygon: () => void;
+  commitSelectionUpdate: () => void;
+  updateSelectionGeometry: (coordinates: Position[], options?: { persist?: boolean; shape?: TerritorySelectionShape }) => void;
+  switchSelectionShape: (shape: TerritorySelectionShape) => void;
   clearSelection: () => void;
 }
 
@@ -36,9 +50,30 @@ export const useSelectionStore = create<SelectionStore>((set, get) => ({
 
   setDraftCoordinates: (draftCoordinates) => set({ draftCoordinates }),
 
+  setSelectionPreview: (selection) =>
+    set({
+      selection,
+      draftCoordinates: [],
+      mode: "none",
+    }),
+
+  syncSelectionFromProject: (territory) =>
+    set((state) => {
+      const nextSelection = territory ? createSelectionFromTerritory(territory) : null;
+
+      if (areSelectionsEqual(state.selection, nextSelection)) {
+        return state;
+      }
+
+      return {
+        selection: nextSelection,
+        draftCoordinates: [],
+        mode: state.mode === "none" ? "none" : state.mode,
+      };
+    }),
+
   commitRectangle: (coordinates) => {
-    const closedCoordinates = closeRing(coordinates);
-    const selection = createTerritorySelection(closedCoordinates);
+    const selection = createTerritorySelection(closeRing(coordinates), "rectangle");
 
     set({
       mode: "none",
@@ -55,7 +90,7 @@ export const useSelectionStore = create<SelectionStore>((set, get) => ({
       return;
     }
 
-    const selection = createTerritorySelection(closeRing(draftCoordinates));
+    const selection = createTerritorySelection(closeRing(draftCoordinates), "polygon");
 
     set({
       mode: "none",
@@ -63,6 +98,50 @@ export const useSelectionStore = create<SelectionStore>((set, get) => ({
       selection,
     });
     useProjectStore.getState().createTerritoryFromSelection(selection);
+  },
+
+  commitSelectionUpdate: () => {
+    const selection = get().selection;
+
+    if (!selection) {
+      return;
+    }
+
+    useProjectStore.getState().updateTerritoryFromSelection(selection);
+  },
+
+  updateSelectionGeometry: (coordinates, options) => {
+    const currentShape = options?.shape ?? get().selection?.shape ?? "polygon";
+    const nextSelection = createTerritorySelection(closeRing(coordinates), currentShape);
+
+    set({
+      selection: nextSelection,
+      draftCoordinates: [],
+      mode: "none",
+    });
+
+    if (options?.persist) {
+      useProjectStore.getState().updateTerritoryFromSelection(nextSelection);
+    }
+  },
+
+  switchSelectionShape: (shape) => {
+    const selection = get().selection;
+
+    if (!selection) {
+      set({ mode: shape, draftCoordinates: [] });
+      return;
+    }
+
+    const nextSelection = convertSelectionShape(selection, shape);
+
+    set({
+      selection: nextSelection,
+      draftCoordinates: [],
+      mode: "none",
+    });
+
+    useProjectStore.getState().updateTerritoryFromSelection(nextSelection);
   },
 
   clearSelection: () =>
@@ -73,45 +152,28 @@ export const useSelectionStore = create<SelectionStore>((set, get) => ({
     }),
 }));
 
-function createTerritorySelection(coordinates: Position[]): TerritorySelection {
-  return {
-    bounds: createBoundingBox(coordinates),
-    geometry: {
-      type: "Feature",
-      properties: {
-        source: "formiq-selection",
-      },
-      geometry: {
-        type: "Polygon",
-        coordinates: [coordinates],
-      },
-    },
-  };
-}
-
-function createBoundingBox(coordinates: Position[]): BoundingBox {
-  const longitudes = coordinates.map((coordinate) => coordinate[0]);
-  const latitudes = coordinates.map((coordinate) => coordinate[1]);
-
-  return {
-    west: Math.min(...longitudes),
-    south: Math.min(...latitudes),
-    east: Math.max(...longitudes),
-    north: Math.max(...latitudes),
-  };
-}
-
-function closeRing(coordinates: Position[]): Position[] {
-  const first = coordinates[0];
-  const last = coordinates[coordinates.length - 1];
-
-  if (!first || !last) {
-    return coordinates;
+function areSelectionsEqual(left: TerritorySelection | null, right: TerritorySelection | null): boolean {
+  if (!left && !right) {
+    return true;
   }
 
-  if (first[0] === last[0] && first[1] === last[1]) {
-    return coordinates;
+  if (!left || !right) {
+    return false;
   }
 
-  return [...coordinates, first];
+  if (left.shape !== right.shape) {
+    return false;
+  }
+
+  const leftCoordinates = left.geometry.geometry.coordinates[0] ?? [];
+  const rightCoordinates = right.geometry.geometry.coordinates[0] ?? [];
+
+  if (leftCoordinates.length !== rightCoordinates.length) {
+    return false;
+  }
+
+  return leftCoordinates.every((coordinate, index) => {
+    const other = rightCoordinates[index];
+    return Boolean(other) && coordinate[0] === other[0] && coordinate[1] === other[1];
+  });
 }

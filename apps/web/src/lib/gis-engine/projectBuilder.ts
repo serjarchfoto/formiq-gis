@@ -7,6 +7,7 @@ import type {
   ProjectDataSource,
   ProjectUnits,
   ProjectOperation,
+  SourceSyncState,
 } from "@/types/formiq";
 import { AnalysisEngine, type AnalysisResult } from "@/lib/gis-engine/analysis";
 import type { DataFusionResult } from "@/lib/gis-engine/fusion";
@@ -17,6 +18,7 @@ export interface CreateFormiqProjectInput {
   description?: string;
   city?: string;
   author?: string;
+  tags?: string[];
   crs?: string;
   units?: ProjectUnits;
 }
@@ -25,6 +27,8 @@ export const DEFAULT_IMPORT_SOURCE_ORDER: ImportSourceId[] = [
   "osm",
   "microsoft-buildings",
   "overture",
+  "city-geojson",
+  "local-buildings",
   "wikidata",
   "gtfs",
   "copernicus-dem",
@@ -36,7 +40,10 @@ export const ENABLED_IMPORT_SOURCE_IDS: ImportSourceId[] = [
   "osm",
   "microsoft-buildings",
   "overture",
+  "city-geojson",
+  "local-buildings",
   "wikidata",
+  "copernicus-dem",
 ];
 
 const enabledImportSourceSet = new Set<ImportSourceId>(ENABLED_IMPORT_SOURCE_IDS);
@@ -63,6 +70,11 @@ export function createEmptyFormiqProject(): FormiqProjectData {
     description: "Архитектурная GIS-среда",
     city: "",
     author: "Architect",
+    tags: [],
+    isArchived: false,
+    isPinned: false,
+    isFavorite: false,
+    lastOpenedAt: null,
     crs: "WGS84",
     units: "m",
     territories: [],
@@ -94,6 +106,68 @@ export function createEmptyFormiqProject(): FormiqProjectData {
         author: "Architect",
         paperFormat: "A3",
         units: "metric",
+      },
+      threeD: {
+        activeMapType: "white-model",
+        visualStyle: "presentation",
+        showBuildings: true,
+        showRoads: true,
+        showZones: true,
+        showWater: true,
+        showVegetation: true,
+        showPoi: true,
+        showHeights: true,
+        showLegend: true,
+        showTerrain: false,
+        showTerritoryBoundary: true,
+        terrain: {
+          enabled: false,
+          source: "copernicus-dem",
+          mode: "flat",
+          exaggeration: 1,
+          clipToTerritory: true,
+          basePlaneElevation: "zero",
+        },
+        semanticColoring: true,
+        buildingHeightMultiplier: 1,
+        zoneOpacity: 0.42,
+        routeWidth: 4,
+        poiMode: "symbols",
+        maxVisiblePoi: 80,
+        cameraPreset: "north-west",
+        lightingTime: "12:00",
+        shadows: true,
+        flythroughEnabled: false,
+        savedViews: [
+          {
+            id: "view-north-west",
+            name: "Общий вид с юго-запада",
+            preset: "north-west",
+            thumbnail: "axonometric",
+          },
+          {
+            id: "view-west",
+            name: "Вид с запада",
+            preset: "west",
+            thumbnail: "west",
+          },
+          {
+            id: "view-north",
+            name: "Вид с севера",
+            preset: "north",
+            thumbnail: "north",
+          },
+          {
+            id: "view-top",
+            name: "Вид сверху",
+            preset: "top",
+            thumbnail: "top",
+          },
+        ],
+        screenshots: [],
+      },
+      debug: {
+        enabled: false,
       },
     },
     dataSources: [],
@@ -157,6 +231,11 @@ export function createFormiqProject(input: CreateFormiqProjectInput): FormiqProj
     description: input.description?.trim() ?? "",
     city: input.city?.trim() ?? "",
     author,
+    tags: normalizeProjectTags(input.tags),
+    isArchived: false,
+    isPinned: false,
+    isFavorite: false,
+    lastOpenedAt: null,
     crs: input.crs?.trim() || "WGS84",
     units: input.units ?? "m",
     settings: {
@@ -249,6 +328,11 @@ export function normalizeFormiqProject(project: Partial<FormiqProjectData>): For
         : project.description ?? fallback.description,
     city: project.city ?? fallback.city,
     author: project.author ?? project.settings?.export?.author ?? fallback.author,
+    tags: normalizeProjectTags(project.tags),
+    isArchived: project.isArchived ?? fallback.isArchived,
+    isPinned: project.isPinned ?? fallback.isPinned,
+    isFavorite: project.isFavorite ?? fallback.isFavorite,
+    lastOpenedAt: project.lastOpenedAt ?? fallback.lastOpenedAt,
     crs: project.crs ?? fallback.crs,
     units: project.units ?? fallback.units,
     territories: project.territories ?? fallback.territories,
@@ -265,6 +349,18 @@ export function normalizeFormiqProject(project: Partial<FormiqProjectData>): For
       export: {
         ...fallback.settings.export,
         ...project.settings?.export,
+      },
+      threeD: {
+        ...fallback.settings.threeD,
+        ...project.settings?.threeD,
+        terrain: {
+          ...fallback.settings.threeD.terrain,
+          ...project.settings?.threeD?.terrain,
+        },
+      },
+      debug: {
+        ...fallback.settings.debug,
+        ...project.settings?.debug,
       },
     },
     dataSources: project.dataSources ?? fallback.dataSources,
@@ -284,7 +380,7 @@ export function normalizeFormiqProject(project: Partial<FormiqProjectData>): For
     transitStops: project.transitStops?.length
       ? project.transitStops
       : restoredLayers.flatMap((layer) => layer.transitStops ?? []),
-    fusion: project.fusion ?? fallback.fusion,
+    fusion: normalizeFusionSnapshot(project.fusion ?? fallback.fusion),
     importSettings: {
       sources: {
         ...fallback.importSettings.sources,
@@ -308,6 +404,62 @@ export function normalizeFormiqProject(project: Partial<FormiqProjectData>): For
       updatedAt: project.metadata?.updatedAt ?? now,
     },
   };
+}
+
+function normalizeFusionSnapshot(
+  fusion: DataFusionSnapshot | null
+): DataFusionSnapshot | null {
+  if (!fusion) {
+    return null;
+  }
+
+  return {
+    ...fusion,
+    sourceStates: fusion.sourceStates.map(normalizeSourceSyncState),
+  };
+}
+
+function normalizeSourceSyncState(state: SourceSyncState): SourceSyncState {
+  if (
+    state.source === "copernicus-dem" &&
+    state.status === "error" &&
+    isRateLimitMessage(state.errorMessage)
+  ) {
+    return {
+      ...state,
+      status: "rate-limited",
+      errorMessage: "OpenTopography rate limit reached: API maximum rate limit reached (50 API calls/24hrs).",
+    };
+  }
+
+  return state;
+}
+
+function normalizeProjectTags(tags?: string[]): string[] {
+  if (!tags?.length) {
+    return [];
+  }
+
+  return Array.from(
+    new Set(
+      tags
+        .map((tag) => tag.trim())
+        .filter(Boolean)
+    )
+  ).slice(0, 12);
+}
+
+function isRateLimitMessage(message: string | null): boolean {
+  if (!message) {
+    return false;
+  }
+
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("rate limit") ||
+    normalized.includes("maximum rate") ||
+    normalized.includes("50 api calls")
+  );
 }
 
 export function createProjectOperation(
