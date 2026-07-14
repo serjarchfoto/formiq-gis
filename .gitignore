@@ -8,6 +8,8 @@ node_modules/
 out/
 dist/
 build/
+!apps/web/build/
+!apps/web/build/sites-vite-plugin.ts
 coverage/
 test-results/
 playwright-report/
@@ -16,6 +18,7 @@ playwright-report/
 *.tsbuildinfo
 .turbo/
 .cache/
+**/.wrangler/
 
 # Local env and logs
 .env

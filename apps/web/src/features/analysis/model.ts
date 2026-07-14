@@ -66,7 +66,7 @@ export function buildAnalysisModel(analysis: AnalysisResult) {
     { id: "charts", label: "Диаграммы", value: formatPercent(greenPercent + waterPercent), detail: "структура территории", tone: "primary", score: clamp(greenPercent + waterPercent, 0, 100) },
   ];
 
-  return { far, gsi, bcr, density, averageFloors, greenPercent, waterPercent, roadDensity, noiseScore, insolationScore, transportScore: Math.round(transportScore), compositeScore, metrics, metricsById: Object.fromEntries(metrics.map((metric) => [metric.id, metric])) as Record<string, MetricItem> };
+  return { far, gsi, bcr, density, averageFloors, buildingCount: analysis.buildings.count, greenPercent, waterPercent, roadDensity, noiseScore, insolationScore, transportScore: Math.round(transportScore), compositeScore, metrics, metricsById: Object.fromEntries(metrics.map((metric) => [metric.id, metric])) as Record<string, MetricItem> };
 }
 
 export function projectScenario(model: ReturnType<typeof buildAnalysisModel>, scenario: ScenarioModel) {

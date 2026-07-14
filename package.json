@@ -7,22 +7,30 @@
   },
   "scripts": {
     "dev": "npm --prefix apps/web run dev",
-    "build": "npm --prefix apps/web run build",
+    "build": "npm --prefix apps/web run build:sites && node scripts/sync-sites-dist.mjs",
+    "build:next": "npm --prefix apps/web run build",
     "lint": "npm --prefix apps/web run lint"
   },
   "dependencies": {
+    "@cloudflare/vite-plugin": "1.37.1",
     "@tailwindcss/postcss": "^4.1.18",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "6.0.2",
+    "@vitejs/plugin-rsc": "0.5.26",
     "dxf-parser": "^1.1.2",
     "maplibre-gl": "^5.24.0",
     "next": "16.2.9",
-    "react": "19.2.4",
-    "react-dom": "19.2.4",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "react-server-dom-webpack": "19.2.7",
     "shpjs": "^6.2.0",
     "sql.js": "^1.14.1",
     "typescript": "^5",
+    "vinext": "0.0.50",
+    "vite": "8.0.13",
+    "wrangler": "4.92.0",
     "zustand": "^5.0.14"
   },
   "devDependencies": {
