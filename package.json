@@ -11,6 +11,7 @@
     "lint": "npm --prefix apps/web run lint"
   },
   "dependencies": {
+    "@tailwindcss/postcss": "^4.1.18",
     "dxf-parser": "^1.1.2",
     "maplibre-gl": "^5.24.0",
     "next": "16.2.9",
