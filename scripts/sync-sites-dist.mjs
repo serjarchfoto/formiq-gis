@@ -7,3 +7,10 @@ await writeFile(serverWranglerConfig, `${JSON.stringify(wranglerConfig)}\n`);
 
 await rm("dist", { recursive: true, force: true });
 await cp("apps/web/dist", "dist", { recursive: true });
+
+const rootWranglerConfig = {
+  ...wranglerConfig,
+  main: "server/index.js",
+  assets: { ...wranglerConfig.assets, directory: "client" },
+};
+await writeFile("dist/wrangler.json", `${JSON.stringify(rootWranglerConfig)}\n`);
