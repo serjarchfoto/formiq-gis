@@ -23,7 +23,7 @@ async function fetchStaticAsset(request: Request, assets: Env["ASSETS"]): Promis
 
   for (const pathname of [...new Set(candidates)]) {
     const assetUrl = new URL(pathname, request.url);
-    const response = await assets.fetch(new Request(assetUrl, request));
+    const response = await assets.fetch(new Request(assetUrl));
     if (response.status !== 404) return response;
   }
 
