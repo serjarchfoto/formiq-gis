@@ -14,14 +14,36 @@ interface ExecutionContext {
   passThroughOnException(): void;
 }
 
+async function fetchStaticAsset(request: Request, assets: Env["ASSETS"]): Promise<Response | null> {
+  const url = new URL(request.url);
+  const candidates = [
+    url.pathname === "/" ? "/index.html" : url.pathname,
+    url.pathname.endsWith("/") ? `${url.pathname}index.html` : `${url.pathname}.html`,
+  ];
+
+  for (const pathname of [...new Set(candidates)]) {
+    const assetUrl = new URL(pathname, request.url);
+    const response = await assets.fetch(new Request(assetUrl, request));
+    if (response.status !== 404) return response;
+  }
+
+  return null;
+}
+
 export default {
-  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  async fetch(request: Request, env: Env | undefined, ctx: ExecutionContext): Promise<Response> {
+    const url = new URL(request.url);
+
+    if (env?.ASSETS && !url.pathname.startsWith("/api/") && url.pathname !== "/_vinext/image") {
+      const staticResponse = await fetchStaticAsset(request, env.ASSETS);
+      if (staticResponse) return staticResponse;
+    }
+
     const [{ DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES, handleImageOptimization }, { default: handler }] =
       await Promise.all([
         import("vinext/server/image-optimization"),
         import("vinext/server/app-router-entry"),
       ]);
-    const url = new URL(request.url);
 
     if (url.pathname === "/_vinext/image") {
       const allowedWidths = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];

@@ -1,7 +1,12 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  output: "export",
+  outputFileTracingIncludes: {
+    "/api/data/microsoft-buildings": [
+      "./data/microsoft-buildings/dataset-links.csv",
+    ],
+  },
 };
 
 export default nextConfig;
