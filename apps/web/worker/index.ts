@@ -1,7 +1,5 @@
 interface Env {
-  ASSETS: {
-    fetch(input: Request): Promise<Response>;
-  };
+  ASSETS: Fetcher;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
@@ -16,7 +14,7 @@ interface ExecutionContext {
   passThroughOnException(): void;
 }
 
-const worker = {
+export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const [{ DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES, handleImageOptimization }, { default: handler }] =
       await Promise.all([
@@ -45,5 +43,3 @@ const worker = {
     return handler.fetch(request, env, ctx);
   },
 };
-
-export default worker;
