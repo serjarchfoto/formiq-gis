@@ -1,12 +1,7 @@
-import {
-  DEFAULT_DEVICE_SIZES,
-  DEFAULT_IMAGE_SIZES,
-  handleImageOptimization,
-} from "vinext/server/image-optimization";
-import handler from "vinext/server/app-router-entry";
-
 interface Env {
-  ASSETS: Fetcher;
+  ASSETS: {
+    fetch(input: Request): Promise<Response>;
+  };
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
@@ -21,8 +16,13 @@ interface ExecutionContext {
   passThroughOnException(): void;
 }
 
-export default {
+const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const [{ DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES, handleImageOptimization }, { default: handler }] =
+      await Promise.all([
+        import("vinext/server/image-optimization"),
+        import("vinext/server/app-router-entry"),
+      ]);
     const url = new URL(request.url);
 
     if (url.pathname === "/_vinext/image") {
@@ -45,3 +45,5 @@ export default {
     return handler.fetch(request, env, ctx);
   },
 };
+
+export default worker;
