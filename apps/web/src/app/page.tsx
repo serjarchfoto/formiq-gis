@@ -1,3 +1,5 @@
+"use client";
+
 import CreateProjectPage from "@/features/projects";
 
 export default function Home() {
