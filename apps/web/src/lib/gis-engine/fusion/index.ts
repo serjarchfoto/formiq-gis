@@ -1,6 +1,7 @@
 export * from "./types";
 export * from "./FusionPriorityRegistry";
 export * from "./SourceManager";
+export * from "./SourcePriorityRegistry";
 export * from "./DataFusionEngine";
 export * from "./providers/OSMSourceAdapter";
 export * from "./providers/OvertureSourceAdapter";

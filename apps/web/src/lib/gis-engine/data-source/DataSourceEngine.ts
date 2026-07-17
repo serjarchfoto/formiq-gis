@@ -2,6 +2,7 @@ import type { DataSourceKind } from "@/types/formiq";
 import type {
   DataSourceEngineImportOptions,
   DataSourceEngineImportResult,
+  DataSourceFetchContext,
   DataSourceHealth,
   DataSourceResult,
   IDataSource,
@@ -30,7 +31,7 @@ export class DataSourceEngine {
 
   async fetchSource(
     source: DataSourceKind,
-    options: Omit<DataSourceEngineImportOptions, "sources" | "onSourceStart" | "onSourceComplete">
+    options: DataSourceFetchContext
   ): Promise<DataSourceResult> {
     const dataSource = this.registry.require(source);
     const cacheKey = this.createCacheKey(source, options.bbox);
@@ -49,6 +50,7 @@ export class DataSourceEngine {
 
     const result = await dataSource.import({
       bbox: options.bbox,
+      signal: options.signal,
       forceRefresh: options.forceRefresh,
     });
 
@@ -73,6 +75,7 @@ export class DataSourceEngine {
       try {
         const result = await this.fetchSource(source, {
           bbox: options.bbox,
+          signal: options.signal,
           forceRefresh: options.forceRefresh,
         });
 

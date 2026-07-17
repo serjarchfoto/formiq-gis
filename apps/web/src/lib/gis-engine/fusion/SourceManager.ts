@@ -3,6 +3,11 @@ import type { DataSourceKind, SourceSyncState } from "@/types/formiq";
 import type { DataSourceEngine } from "@/lib/gis-engine/data-source/DataSourceEngine";
 import { normalizeDataSourceStatus } from "@/lib/gis-engine/data-source/status";
 import type { SourceAdapter, SourceAdapterResult, SourceCacheEntry } from "./types";
+import {
+  getRegisteredSourceIds,
+  getSourcePriorityPlan,
+  type SourcePriorityRole,
+} from "./SourcePriorityRegistry";
 
 export interface SourceLoadProgressEvent {
   source: DataSourceKind;
@@ -15,6 +20,15 @@ export interface SourceLoadProgressEvent {
 export interface SourceLoadOptions {
   onSourceStart?: (event: SourceLoadProgressEvent) => void;
   onSourceComplete?: (event: SourceLoadProgressEvent) => void;
+  maxFeaturesPerSource?: number;
+  maxFeaturesTotal?: number;
+  /** Optional roles used to order a single request per provider by source policy. */
+  priorityRoles?: SourcePriorityRole[];
+}
+
+export interface PrioritySourceLoadOptions extends SourceLoadOptions {
+  /** Continue through secondary and fallback providers even when a primary returns data. */
+  includeSecondary?: boolean;
 }
 
 export class SourceManager {
@@ -46,9 +60,16 @@ export class SourceManager {
           version: source.version,
         }))
       : Array.from(this.adapters.values());
+    const orderedAdapters = options.priorityRoles?.length
+      ? [...adapters].sort((left, right) =>
+          getPriorityRank(left.source, options.priorityRoles!) -
+          getPriorityRank(right.source, options.priorityRoles!)
+        )
+      : adapters;
     const results: SourceAdapterResult[] = [];
+    let totalFeatureCount = 0;
 
-    for (const adapter of adapters) {
+    for (const adapter of orderedAdapters) {
       options.onSourceStart?.({
         source: adapter.source,
         label: adapter.source,
@@ -60,6 +81,27 @@ export class SourceManager {
       const result = await this.loadSource(adapter.source, bounds);
       const state = this.states.get(adapter.source);
 
+      if (
+        typeof options.maxFeaturesPerSource === "number" &&
+        result.features.length > options.maxFeaturesPerSource
+      ) {
+        throw new Error(
+          `Источник ${adapter.source} вернул ${result.features.length.toLocaleString("ru-RU")} объектов. ` +
+            `Безопасный предел — ${options.maxFeaturesPerSource.toLocaleString("ru-RU")}. Уменьшите территорию.`
+        );
+      }
+
+      totalFeatureCount += result.features.length;
+      if (
+        typeof options.maxFeaturesTotal === "number" &&
+        totalFeatureCount > options.maxFeaturesTotal
+      ) {
+        throw new Error(
+          `Источники вернули более ${options.maxFeaturesTotal.toLocaleString("ru-RU")} объектов. ` +
+            "Уменьшите территорию или отключите необязательные источники."
+        );
+      }
+
       options.onSourceComplete?.({
         source: adapter.source,
         label: adapter.source,
@@ -69,6 +111,86 @@ export class SourceManager {
       });
 
       results.push(result);
+    }
+
+    return results;
+  }
+
+  /**
+   * Loads registered adapters in the central Primary → Secondary → Fallback order.
+   * Providers are not unioned here: every result remains an independent feature
+   * collection and can be chunked/rendered by the import pipeline.
+   */
+  async loadByPriority(
+    role: SourcePriorityRole,
+    bounds: BoundingBox,
+    options: PrioritySourceLoadOptions = {}
+  ): Promise<SourceAdapterResult[]> {
+    const available = this.dataSourceEngine
+      ? this.dataSourceEngine.registry.list().map((source) => source.id)
+      : Array.from(this.adapters.keys());
+    const plan = getSourcePriorityPlan(role);
+    const sourceIds = getRegisteredSourceIds(role, available);
+    const results: SourceAdapterResult[] = [];
+    let primaryHasData = false;
+    let totalFeatureCount = 0;
+
+    for (const source of sourceIds) {
+      const priority = plan.find((item) => item.id === source)?.priority ?? "fallback";
+      options.onSourceStart?.({
+        source,
+        label: source,
+        status: "loading",
+        featureCount: 0,
+        errorMessage: null,
+      });
+
+      const result = await this.loadSource(source, bounds);
+      const state = this.states.get(source);
+      const hasData = result.features.length > 0;
+
+      if (
+        typeof options.maxFeaturesPerSource === "number" &&
+        result.features.length > options.maxFeaturesPerSource
+      ) {
+        throw new Error(
+          `Источник ${source} вернул ${result.features.length.toLocaleString("ru-RU")} объектов. ` +
+            `Безопасный предел — ${options.maxFeaturesPerSource.toLocaleString("ru-RU")}. Уменьшите территорию.`
+        );
+      }
+
+      totalFeatureCount += result.features.length;
+      if (
+        typeof options.maxFeaturesTotal === "number" &&
+        totalFeatureCount > options.maxFeaturesTotal
+      ) {
+        throw new Error(
+          `Источники вернули более ${options.maxFeaturesTotal.toLocaleString("ru-RU")} объектов. ` +
+            "Уменьшите территорию или отключите необязательные источники."
+        );
+      }
+
+      if (priority === "primary" && hasData) primaryHasData = true;
+
+      const enrichedResult: SourceAdapterResult = {
+        ...result,
+        metadata: {
+          ...result.metadata,
+          priority,
+          fallbackUsed: priority !== "primary" && !primaryHasData,
+        },
+      };
+
+      options.onSourceComplete?.({
+        source,
+        label: source,
+        status: state?.status ?? "ready",
+        featureCount: enrichedResult.features.length,
+        errorMessage: state?.errorMessage ?? null,
+      });
+
+      results.push(enrichedResult);
+      if (options.includeSecondary === false && priority === "primary" && hasData) break;
     }
 
     return results;
@@ -206,4 +328,14 @@ export class SourceManager {
 
 function resolveResultStatus(result: SourceAdapterResult): SourceSyncState["status"] {
   return normalizeDataSourceStatus(result.metadata?.status, result.features.length);
+}
+
+function getPriorityRank(source: DataSourceKind, roles: SourcePriorityRole[]): number {
+  const ranks = roles.flatMap((role) =>
+    getSourcePriorityPlan(role).map((item, index) => ({
+      source: item.id,
+      rank: index + (item.priority === "primary" ? 0 : item.priority === "secondary" ? 100 : 200),
+    }))
+  );
+  return ranks.find((item) => item.source === source)?.rank ?? 10_000;
 }

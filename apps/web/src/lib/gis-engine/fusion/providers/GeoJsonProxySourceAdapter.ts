@@ -1,7 +1,12 @@
 import type { Feature, Geometry, GeoJsonProperties } from "geojson";
 import type { BoundingBox } from "@/types/gis";
 import type { DataSourceKind } from "@/types/formiq";
-import type { SourceAdapter, SourceAdapterResult, SourceFeature } from "@/lib/gis-engine/fusion/types";
+import type {
+  SourceAdapter,
+  SourceAdapterRawResult,
+  SourceAdapterResult,
+  SourceFeature,
+} from "@/lib/gis-engine/fusion/types";
 import { getFeatureId } from "./sourceAdapterUtils";
 
 type ProxyStatus = "ready" | "loading" | "not-configured" | "rate-limited" | "offline" | "error";
@@ -23,13 +28,29 @@ export abstract class GeoJsonProxySourceAdapter implements SourceAdapter {
   protected constructor(
     readonly source: DataSourceKind,
     private readonly defaultEndpoint: string,
-    private readonly envEndpoint?: string
+    private readonly envEndpoint: string | undefined,
+    private readonly normalization: "building" | "general",
+    private readonly fallbackPrefix: string
   ) {}
 
-  async fetch({ bounds }: Parameters<SourceAdapter["fetch"]>[0]): Promise<SourceAdapterResult> {
+  async fetch({ bounds, signal }: Parameters<SourceAdapter["fetch"]>[0]): Promise<SourceAdapterResult> {
+    const raw = await this.fetchRaw({ bounds, signal });
+    const features = raw.payload.format === "geojson" && raw.metadata?.status === "ready"
+      ? raw.payload.features.flatMap((feature, index) => this.normalizeFeature(feature, index))
+      : [];
+
+    return {
+      source: this.source,
+      version: this.version,
+      features,
+      metadata: raw.metadata,
+    };
+  }
+
+  async fetchRaw({ bounds, signal }: Parameters<SourceAdapter["fetch"]>[0]): Promise<SourceAdapterRawResult> {
     const endpoint = this.envEndpoint || this.defaultEndpoint;
     const url = `${endpoint}?bbox=${encodeURIComponent(formatBbox(bounds))}`;
-    const response = await fetch(url);
+    const response = await fetch(url, { signal });
 
     if (!response.ok) {
       throw new Error(`${this.source} proxy failed with status ${response.status}.`);
@@ -41,7 +62,12 @@ export abstract class GeoJsonProxySourceAdapter implements SourceAdapter {
     return {
       source: this.source,
       version: this.version,
-      features: status === "ready" ? geojson.features.flatMap((feature, index) => this.normalizeFeature(feature, index)) : [],
+      payload: {
+        format: "geojson",
+        features: geojson.features,
+        normalization: this.normalization,
+        fallbackPrefix: this.fallbackPrefix,
+      },
       metadata: {
         status,
         message: geojson.metadata?.message ?? "",
@@ -79,9 +105,9 @@ export function normalizeBuildingFeature(
       geometry,
       tags: toStringMap(properties),
       names: properties.name ? { default: String(properties.name) } : undefined,
-      height: toNullableNumber(properties.height ?? properties.render_height),
-      levels: toNullableNumber(properties.levels ?? properties["building:levels"]),
-      year: toNullableNumber(properties.year ?? properties.year_built ?? properties.start_date),
+      height: toPositiveNumber(properties.height ?? properties.render_height),
+      levels: toPositiveNumber(properties.levels ?? properties["building:levels"]),
+      year: toValidYear(properties.year ?? properties.year_built ?? properties.start_date),
       usage: toNullableString(properties.usage ?? properties.class ?? properties.function),
       material: toNullableString(properties.material ?? properties["building:material"]),
       roof: toNullableString(properties.roof ?? properties.roof_shape),
@@ -314,6 +340,17 @@ function toNullableNumber(value: unknown): number | null {
   }
 
   return null;
+}
+
+function toPositiveNumber(value: unknown): number | null {
+  const parsed = toNullableNumber(value);
+  return parsed !== null && parsed > 0 ? parsed : null;
+}
+
+function toValidYear(value: unknown): number | null {
+  const parsed = toNullableNumber(value);
+  const currentYear = new Date().getFullYear() + 1;
+  return parsed !== null && Number.isInteger(parsed) && parsed >= 1000 && parsed <= currentYear ? parsed : null;
 }
 
 function toStringMap(properties: Record<string, unknown>): Record<string, string> {

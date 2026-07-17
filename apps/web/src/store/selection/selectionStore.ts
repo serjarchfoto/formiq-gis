@@ -11,6 +11,7 @@ import {
   createSelectionFromTerritory,
   createTerritorySelection,
 } from "@/features/selection/selectionGeometry";
+import { AreaService } from "@/features/selection/areaService";
 
 export type SelectionMode = "none" | "rectangle" | "polygon";
 export type TerritorySelectionShape = "rectangle" | "polygon";
@@ -25,6 +26,8 @@ interface SelectionStore {
   mode: SelectionMode;
   selection: TerritorySelection | null;
   draftCoordinates: Position[];
+  history: TerritorySelection[];
+  future: TerritorySelection[];
   setMode: (mode: SelectionMode) => void;
   setDraftCoordinates: (coordinates: Position[]) => void;
   setSelectionPreview: (selection: TerritorySelection | null) => void;
@@ -35,27 +38,34 @@ interface SelectionStore {
   updateSelectionGeometry: (coordinates: Position[], options?: { persist?: boolean; shape?: TerritorySelectionShape }) => void;
   switchSelectionShape: (shape: TerritorySelectionShape) => void;
   clearSelection: () => void;
+  undo: () => void;
+  redo: () => void;
 }
 
 export const useSelectionStore = create<SelectionStore>((set, get) => ({
   mode: "none",
   selection: null,
   draftCoordinates: [],
+  history: [],
+  future: [],
 
-  setMode: (mode) =>
-    set({
-      mode,
-      draftCoordinates: [],
-    }),
+  setMode: (mode) => {
+    const project = useProjectStore.getState().project;
+    const activeTerritory = project.territories.find((territory) => territory.id === project.activeTerritoryId);
+    if (activeTerritory?.locked || activeTerritory?.status === "importing") return;
+    set({ mode, draftCoordinates: [] });
+  },
 
   setDraftCoordinates: (draftCoordinates) => set({ draftCoordinates }),
 
-  setSelectionPreview: (selection) =>
+  setSelectionPreview: (selection) => {
     set({
       selection,
       draftCoordinates: [],
       mode: "none",
-    }),
+    });
+    if (selection) AreaService.update(selection);
+  },
 
   syncSelectionFromProject: (territory) =>
     set((state) => {
@@ -65,6 +75,7 @@ export const useSelectionStore = create<SelectionStore>((set, get) => ({
         return state;
       }
 
+      AreaService.setArea(nextSelection);
       return {
         selection: nextSelection,
         draftCoordinates: [],
@@ -79,7 +90,10 @@ export const useSelectionStore = create<SelectionStore>((set, get) => ({
       mode: "none",
       draftCoordinates: [],
       selection,
+      history: get().selection ? [...get().history, get().selection as TerritorySelection] : get().history,
+      future: [],
     });
+    AreaService.setArea(selection);
     useProjectStore.getState().createTerritoryFromSelection(selection);
   },
 
@@ -96,7 +110,10 @@ export const useSelectionStore = create<SelectionStore>((set, get) => ({
       mode: "none",
       draftCoordinates: [],
       selection,
+      history: get().selection ? [...get().history, get().selection as TerritorySelection] : get().history,
+      future: [],
     });
+    AreaService.setArea(selection);
     useProjectStore.getState().createTerritoryFromSelection(selection);
   },
 
@@ -108,6 +125,7 @@ export const useSelectionStore = create<SelectionStore>((set, get) => ({
     }
 
     useProjectStore.getState().updateTerritoryFromSelection(selection);
+    AreaService.update(selection);
   },
 
   updateSelectionGeometry: (coordinates, options) => {
@@ -118,7 +136,10 @@ export const useSelectionStore = create<SelectionStore>((set, get) => ({
       selection: nextSelection,
       draftCoordinates: [],
       mode: "none",
+      history: get().selection ? [...get().history, get().selection as TerritorySelection] : get().history,
+      future: [],
     });
+    AreaService.update(nextSelection);
 
     if (options?.persist) {
       useProjectStore.getState().updateTerritoryFromSelection(nextSelection);
@@ -139,17 +160,42 @@ export const useSelectionStore = create<SelectionStore>((set, get) => ({
       selection: nextSelection,
       draftCoordinates: [],
       mode: "none",
+      history: [...get().history, selection],
+      future: [],
     });
+    AreaService.update(nextSelection);
 
     useProjectStore.getState().updateTerritoryFromSelection(nextSelection);
   },
 
-  clearSelection: () =>
+  clearSelection: () => {
+    const project = useProjectStore.getState().project;
+    const activeTerritory = project.territories.find((territory) => territory.id === project.activeTerritoryId);
+    if (activeTerritory?.locked || activeTerritory?.status === "importing") return;
     set({
       mode: "none",
       selection: null,
       draftCoordinates: [],
-    }),
+    });
+    AreaService.clear();
+    void useProjectStore.getState().clearActiveTerritory();
+  },
+  undo: () => {
+    const state = get();
+    const previous = state.history.at(-1);
+    if (!previous) return;
+    set({ selection: previous, history: state.history.slice(0, -1), future: state.selection ? [state.selection, ...state.future] : state.future, mode: "none", draftCoordinates: [] });
+    AreaService.setArea(previous);
+    useProjectStore.getState().updateTerritoryFromSelection(previous);
+  },
+  redo: () => {
+    const state = get();
+    const next = state.future[0];
+    if (!next) return;
+    set({ selection: next, future: state.future.slice(1), history: state.selection ? [...state.history, state.selection] : state.history, mode: "none", draftCoordinates: [] });
+    AreaService.setArea(next);
+    useProjectStore.getState().updateTerritoryFromSelection(next);
+  },
 }));
 
 function areSelectionsEqual(left: TerritorySelection | null, right: TerritorySelection | null): boolean {

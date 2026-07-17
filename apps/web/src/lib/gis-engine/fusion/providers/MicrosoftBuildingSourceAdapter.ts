@@ -7,7 +7,9 @@ export class MicrosoftBuildingSourceAdapter extends GeoJsonProxySourceAdapter {
     super(
       "microsoft-buildings",
       "/api/data/microsoft-buildings",
-      process.env.NEXT_PUBLIC_MICROSOFT_BUILDINGS_API_URL
+      process.env.NEXT_PUBLIC_MICROSOFT_BUILDINGS_API_URL,
+      "building",
+      "microsoft-building"
     );
   }
 

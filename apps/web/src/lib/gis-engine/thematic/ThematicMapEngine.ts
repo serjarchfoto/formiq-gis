@@ -7,6 +7,7 @@ import { FunctionThemeGenerator } from "./generators/FunctionThemeGenerator";
 import { DensityThemeGenerator } from "./generators/DensityThemeGenerator";
 import { RoadThemeGenerator } from "./generators/RoadThemeGenerator";
 import { TerrainThemeGenerator } from "./generators/TerrainThemeGenerator";
+import { PopulationThemeGenerator } from "./generators/PopulationThemeGenerator";
 import { VegetationThemeGenerator } from "./generators/VegetationThemeGenerator";
 import { WaterThemeGenerator } from "./generators/WaterThemeGenerator";
 import { ThemeRegistry } from "./ThemeRegistry";
@@ -79,7 +80,8 @@ export function createDefaultThemeRegistry(): ThemeRegistry {
     .register(new VegetationThemeGenerator())
     .register(new WaterThemeGenerator())
     .register(new AccessibilityThemeGenerator())
-    .register(new TerrainThemeGenerator());
+    .register(new TerrainThemeGenerator())
+    .register(new PopulationThemeGenerator());
 }
 
 export function isThematicMapDefinition(value: unknown): value is ThematicMapDefinition {

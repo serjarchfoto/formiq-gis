@@ -72,7 +72,7 @@ export class SourceAdapterDataSource implements IDataSource {
     this.status = "loading";
 
     try {
-      const adapterResult = await this.adapter.fetch({ bounds: context.bbox });
+      const adapterResult = await this.adapter.fetch({ bounds: context.bbox, signal: context.signal });
       const status = normalizeDataSourceStatus(adapterResult.metadata?.status, adapterResult.features.length);
       this.status = status;
 

@@ -1,4 +1,8 @@
-import type { SourceAdapter, SourceAdapterResult } from "@/lib/gis-engine/fusion/types";
+import type {
+  SourceAdapter,
+  SourceAdapterRawResult,
+  SourceAdapterResult,
+} from "@/lib/gis-engine/fusion/types";
 import { WikidataService } from "@/services/wikidata";
 
 export class WikidataSourceAdapter implements SourceAdapter {
@@ -7,8 +11,8 @@ export class WikidataSourceAdapter implements SourceAdapter {
 
   constructor(private readonly service = new WikidataService()) {}
 
-  async fetch({ bounds }: Parameters<SourceAdapter["fetch"]>[0]): Promise<SourceAdapterResult> {
-    const rows = await this.service.loadByBoundingBox(bounds);
+  async fetch({ bounds, signal }: Parameters<SourceAdapter["fetch"]>[0]): Promise<SourceAdapterResult> {
+    const rows = await this.service.loadByBoundingBox(bounds, signal);
 
     return {
       source: this.source,
@@ -29,6 +33,21 @@ export class WikidataSourceAdapter implements SourceAdapter {
           subtype: row.description,
           name: row.label,
         })),
+    };
+  }
+
+  async fetchRaw({ bounds, signal }: Parameters<SourceAdapter["fetch"]>[0]): Promise<SourceAdapterRawResult> {
+    const geojson = await this.service.loadGeoJsonByBoundingBox(bounds, signal);
+    return {
+      source: this.source,
+      version: this.version,
+      payload: {
+        format: "geojson",
+        features: geojson.features,
+        normalization: "general",
+        fallbackPrefix: "wikidata",
+      },
+      metadata: { status: "ready", featureCount: geojson.features.length },
     };
   }
 }

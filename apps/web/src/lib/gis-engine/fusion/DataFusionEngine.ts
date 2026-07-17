@@ -30,6 +30,7 @@ import type {
   SourcePoiFeature,
   SourceRoadFeature,
   SourceTerrainFeature,
+  SourceTransitStopFeature,
   SourceVegetationFeature,
   SourceWaterFeature,
 } from "./types";
@@ -50,7 +51,7 @@ export class DataFusionEngine {
   private readonly fusionCache = new Map<string, DataFusionResult>();
 
   constructor(
-    private readonly sourceManager: SourceManager,
+    private readonly sourceManager: SourceManager | null = null,
     private readonly priorityRegistry = new FusionPriorityRegistry(),
     private readonly semanticEngine = new SemanticEngine()
   ) {}
@@ -63,7 +64,27 @@ export class DataFusionEngine {
       return cached;
     }
 
+    if (!this.sourceManager) {
+      throw new Error("DataFusionEngine.fuse requires a SourceManager.");
+    }
+
     const sourceResults = await this.sourceManager.loadAll(bounds, options);
+    const result = this.fuseSourceResults(bounds, sourceResults);
+    this.fusionCache.set(cacheKey, result);
+    return result;
+  }
+
+  /**
+   * Builds the canonical FORMIQ model from already normalized source features.
+   * Chunked imports use this same path after their worker has normalized data,
+   * keeping map-only chunks and the project model on one contract.
+   */
+  fuseSourceResults(
+    bounds: BoundingBox,
+    sourceResults: SourceAdapterResult[],
+    sourceStates = this.sourceManager?.getStates() ?? [],
+    dataSources = sourceStates.map(toProjectDataSource)
+  ): DataFusionResult {
     const inputFeatureCount = sourceResults.reduce((total, result) => total + result.features.length, 0);
     const buildings = this.mergeBuildings(sourceResults);
     const roads = this.mergeRoads(sourceResults);
@@ -72,7 +93,7 @@ export class DataFusionEngine {
     const terrain = this.mergeTerrain(sourceResults);
     const boundaries = this.mergeBoundaries(sourceResults);
     const poi = this.mergePoi(sourceResults);
-    const transitStops = this.mergeTransitStops();
+    const transitStops = this.mergeTransitStops(sourceResults);
     const semanticCollections = this.applySemantics({
       buildings,
       roads,
@@ -89,8 +110,6 @@ export class DataFusionEngine {
       },
       bounds
     );
-    const sourceStates = this.sourceManager.getStates();
-    const dataSources = sourceStates.map(toProjectDataSource);
     const fusedFeatureCount =
       semanticCollections.buildings.length +
       semanticCollections.roads.length +
@@ -126,14 +145,13 @@ export class DataFusionEngine {
       },
     };
 
-    this.fusionCache.set(cacheKey, result);
     return result;
   }
 
   invalidate(bounds?: BoundingBox): void {
     if (!bounds) {
       this.fusionCache.clear();
-      this.sourceManager.invalidate();
+      this.sourceManager?.invalidate();
       return;
     }
 
@@ -491,8 +509,32 @@ export class DataFusionEngine {
     return poi;
   }
 
-  private mergeTransitStops(): FormiqTransitStop[] {
-    return [];
+  private mergeTransitStops(results: SourceAdapterResult[]): FormiqTransitStop[] {
+    return results
+      .flatMap((result) =>
+        result.features.filter(
+          (feature): feature is SourceTransitStopFeature => feature.kind === "transit-stop"
+        )
+      )
+      .map((candidate, index) => {
+        const geometry = toPointGeometry(candidate.geometry);
+        if (!geometry) return null;
+        return {
+          id: `transit-stop-${index}-${candidate.sourceFeatureId}`,
+          type: "transit-stop" as const,
+          geometry,
+          network: candidate.network ?? candidate.tags.network ?? candidate.tags.operator ?? null,
+          stopType: candidate.stopType ?? candidate.tags.public_transport ?? candidate.tags.highway ?? null,
+          name: candidate.name ?? candidate.names?.default ?? candidate.tags.name ?? null,
+          tags: candidate.tags,
+          names: candidate.names,
+          source: candidate.source,
+          confidence: getSourceConfidence(candidate.source),
+          lifecycleState: "active" as const,
+          provenance: buildFeatureProvenance([candidate], candidate.source, {}),
+        };
+      })
+      .filter(isPresent);
   }
 
   private applySemantics(collections: {
@@ -965,6 +1007,15 @@ function getBoxArea(box: BoundingBox): number {
 
 function normalizeBuildingUsage(value: unknown): FormiqBuilding["usage"] {
   const normalized = typeof value === "string" ? value.toLowerCase() : "";
+
+  if (/apart|жил|resid|house|detached|dorm|hostel/.test(normalized)) return "residential";
+  if (/shop|retail|market|office|commercial|торг|магаз|бизнес/.test(normalized)) return "commercial";
+  if (/industrial|warehouse|factory|manufact|склад|промыш/.test(normalized)) return "industrial";
+  if (/school|university|college|kindergarten|education|школ|вуз|детск/.test(normalized)) return "education";
+  if (/hospital|clinic|doctor|health|больниц|поликлин/.test(normalized)) return "healthcare";
+  if (/church|chapel|cathedral|mosque|synagogue|temple|церк|храм|мечет/.test(normalized)) return "religious";
+  if (/sport|stadium|fitness|спорт|стадион/.test(normalized)) return "sports";
+  if (/public|civic|government|админ|муницип/.test(normalized)) return "public";
 
   if (["apartments", "detached", "house", "residential"].includes(normalized)) {
     return "residential";

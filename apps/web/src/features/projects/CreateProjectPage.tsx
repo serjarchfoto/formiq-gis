@@ -229,6 +229,7 @@ export default function CreateProjectPage() {
     }
 
     setIsSubmitting(true);
+    markPerformance("create-project-start");
 
     try {
       const project = await createProject({
@@ -239,6 +240,8 @@ export default function CreateProjectPage() {
         tags: parseTags(form.tags),
       });
       setForm(initialForm);
+      measurePerformance("create-project-state-duration", "create-project-start", "create-project-state-ready");
+      markPerformance("create-project-navigation-requested");
       router.push(`/map?projectId=${encodeURIComponent(project.id)}`);
     } catch {
       setError(text.createError);
@@ -1295,7 +1298,7 @@ function ActionPanel({
         <ActionButton disabled={!project} icon="copy" onClick={() => project && onDuplicate(project.id)}>
           Дублировать проект
         </ActionButton>
-        <ActionButton disabled icon="grid" onClick={() => undefined}>Шаблоны проектов</ActionButton>
+        <ActionButton disabled icon="grid">Шаблоны проектов</ActionButton>
         <ActionButton danger disabled={!project} icon="trash" onClick={() => project && onDelete(project)}>
           Корзина
         </ActionButton>
@@ -1476,7 +1479,7 @@ function ActionButton({
   danger?: boolean;
   disabled?: boolean;
   children: ReactNode;
-  onClick: () => void;
+  onClick?: () => void;
 }) {
   return (
     <button
@@ -1666,7 +1669,20 @@ function normalizeSearch(value: string): string {
 }
 
 function getProjectSize(project: FormiqProjectData): number {
-  return new Blob([JSON.stringify(project)]).size;
+  return project.metadata.serializedSize ?? 0;
+}
+
+function markPerformance(name: string): void {
+  if (typeof performance === "undefined") return;
+  performance.clearMarks(name);
+  performance.mark(name);
+}
+
+function measurePerformance(name: string, startMark: string, endMark: string): void {
+  if (typeof performance === "undefined") return;
+  if (!performance.getEntriesByName(startMark).length || !performance.getEntriesByName(endMark).length) return;
+  performance.clearMeasures(name);
+  performance.measure(name, startMark, endMark);
 }
 
 function formatBytes(bytes: number): string {

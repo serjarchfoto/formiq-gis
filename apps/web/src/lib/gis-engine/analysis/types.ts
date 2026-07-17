@@ -39,6 +39,12 @@ export interface BuildingAnalysis {
   floorTheme: ThematicRenderItem[];
   ageTheme: ThematicRenderItem[];
   functionTheme: ThematicRenderItem[];
+  ageCoveragePercent: number;
+  functionCoveragePercent: number;
+  floorCoveragePercent: number;
+  estimatedPopulation: number;
+  populationCoveragePercent: number;
+  dataNotes: string[];
 }
 
 export interface RoadAnalysis {
@@ -65,6 +71,11 @@ export interface TerrainAnalysis {
   status: "not-available" | "ready";
   slopeCategories: Record<string, number>;
   elevationCategories: Record<string, number>;
+  minElevation: number | null;
+  maxElevation: number | null;
+  averageElevation: number | null;
+  coveragePercent: number;
+  reason: string | null;
 }
 
 export interface AccessibilityAnalysis {
@@ -74,6 +85,9 @@ export interface AccessibilityAnalysis {
   schools: ThematicRenderItem[];
   hospitals: ThematicRenderItem[];
   services: ThematicRenderItem[];
+  coveragePercent: number;
+  walkingDistanceMeters: number;
+  reason: string | null;
 }
 
 export interface AnalysisResult {

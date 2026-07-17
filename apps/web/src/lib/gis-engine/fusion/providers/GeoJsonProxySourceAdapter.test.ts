@@ -1,6 +1,6 @@
 import type { Feature, Geometry } from "geojson";
 import { describe, expect, it } from "vitest";
-import { normalizeGeneralGeoJsonFeature } from "./GeoJsonProxySourceAdapter";
+import { normalizeBuildingFeature, normalizeGeneralGeoJsonFeature } from "./GeoJsonProxySourceAdapter";
 
 describe("normalizeGeneralGeoJsonFeature", () => {
   it.each([
@@ -21,6 +21,17 @@ describe("normalizeGeneralGeoJsonFeature", () => {
 
     expect(result).toHaveLength(1);
     expect(result[0]?.kind).toBe(expectedKind);
+  });
+
+  it("treats Microsoft placeholder height and invalid dates as missing data", () => {
+    const [building] = normalizeBuildingFeature(
+      "microsoft-buildings",
+      polygon({ height: -1, levels: 0, year: 999 }),
+      0,
+      "test"
+    );
+
+    expect(building).toEqual(expect.objectContaining({ height: null, levels: null, year: null }));
   });
 });
 

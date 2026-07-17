@@ -9,8 +9,22 @@ export class TerrainCalculator implements AnalysisCalculator<"terrain"> {
         status: "not-available",
         slopeCategories: {},
         elevationCategories: {},
+        minElevation: null,
+        maxElevation: null,
+        averageElevation: null,
+        coveragePercent: 0,
+        reason: project.importSettings.includeTerrain
+          ? "DEM не вернул точки высот для выбранной территории."
+          : "Рельеф не импортирован: включите источник DEM в настройках импорта.",
       };
     }
+
+    const elevations = project.terrain
+      .map((terrain) => terrain.elevation)
+      .filter((elevation): elevation is number => typeof elevation === "number" && Number.isFinite(elevation));
+    const slopes = project.terrain
+      .map((terrain) => terrain.slope)
+      .filter((slope): slope is number => typeof slope === "number" && Number.isFinite(slope));
 
     return {
       status: "ready",
@@ -24,6 +38,11 @@ export class TerrainCalculator implements AnalysisCalculator<"terrain"> {
         result[key] = (result[key] ?? 0) + 1;
         return result;
       }, {}),
+      minElevation: elevations.length ? Math.min(...elevations) : null,
+      maxElevation: elevations.length ? Math.max(...elevations) : null,
+      averageElevation: elevations.length ? elevations.reduce((sum, value) => sum + value, 0) / elevations.length : null,
+      coveragePercent: Math.min(100, (elevations.length / Math.max(project.terrain.length, 1)) * 100),
+      reason: slopes.length < project.terrain.length ? "Часть точек DEM не содержит уклон; высоты рассчитаны по доступным образцам." : null,
     };
   }
 }

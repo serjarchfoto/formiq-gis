@@ -9,6 +9,7 @@ import {
   createProjectOperation,
   enrichProjectWithAnalysisCache,
   IndexedDbProjectStorage,
+  layerChunkStorage,
   normalizeFormiqProject,
 } from "@/lib";
 import type { CreateFormiqProjectInput, DataFusionResult } from "@/lib";
@@ -21,8 +22,10 @@ import type {
   ProjectThreeDSettings,
   ProjectOperation,
   ProjectWorkspaceMode,
+  TerritoryStatus,
 } from "@/types/formiq";
 import type { TerritorySelection } from "@/store/selection";
+import { clipProjectToArea } from "@/features/selection/areaService";
 
 export interface ProjectState {
   activeProjectId: string | null;
@@ -30,6 +33,7 @@ export interface ProjectState {
   projects: FormiqProjectData[];
   isHydrated: boolean;
   isSaving: boolean;
+  isDirty: boolean;
   lastSavedAt: string | null;
 }
 
@@ -76,6 +80,9 @@ export interface ProjectStore extends ProjectState {
   syncProjectFromFusion: (fusionResult: DataFusionResult) => void;
   createTerritoryFromSelection: (selection: TerritorySelection, name?: string) => void;
   updateTerritoryFromSelection: (selection: TerritorySelection, territoryId?: string) => void;
+  setTerritoryStatus: (status: TerritoryStatus, territoryId?: string, revision?: FormiqTerritory["importRevision"]) => void;
+  unlockAndResetTerritory: (territoryId?: string) => Promise<boolean>;
+  clearActiveTerritory: () => Promise<void>;
   setActiveTerritory: (territoryId: string) => void;
   setWorkspaceMode: (mode: ProjectWorkspaceMode) => void;
   setMapDisplaySettings: (settings: Partial<ProjectDisplaySettings>) => void;
@@ -97,6 +104,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
   projects: [],
   isHydrated: false,
   isSaving: false,
+  isDirty: false,
   lastSavedAt: null,
 
   setActiveProjectId: (activeProjectId) => set({ activeProjectId }),
@@ -119,6 +127,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       activeProjectId: project.id,
       projects: mergeProjects(get().projects, project),
       isHydrated: true,
+      isDirty: false,
       lastSavedAt: project.metadata.updatedAt,
     });
   },
@@ -154,20 +163,24 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         ...(project.history ?? []),
       ].slice(0, 200),
     });
-    await projectStorage.saveProjectRecord(normalizedProject);
-    await projectStorage.setActiveProjectId(normalizedProject.id);
+    const savedProject = await projectStorage.saveProject(normalizedProject);
 
     set({
-      project: normalizedProject,
-      activeProjectId: normalizedProject.id,
-      projects: mergeProjects(get().projects, normalizedProject),
-      lastSavedAt: normalizedProject.metadata.updatedAt,
+      project: savedProject,
+      activeProjectId: savedProject.id,
+      projects: mergeProjects(get().projects, savedProject),
+      isDirty: false,
+      lastSavedAt: savedProject.metadata.updatedAt,
     });
 
-    return normalizedProject;
+    return savedProject;
   },
 
   saveProject: async () => {
+    if (!get().isDirty) {
+      return;
+    }
+
     const project = normalizeFormiqProject(get().project);
     const savedAt = new Date().toISOString();
     const updatedProject = {
@@ -178,13 +191,24 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       },
     };
 
-    set({ isSaving: true });
-    await projectStorage.saveProject(updatedProject);
-    set({
-      isSaving: false,
+    set((state) => ({
+      isSaving: true,
       project: updatedProject,
-      lastSavedAt: savedAt,
-      projects: mergeProjects(get().projects, updatedProject),
+      projects: mergeProjects(state.projects, updatedProject),
+    }));
+    const savedProject = await projectStorage.saveProject(updatedProject);
+    set((state) => {
+      const isCurrentRevision =
+        state.project.id === savedProject.id &&
+        state.project.metadata.updatedAt === updatedProject.metadata.updatedAt;
+
+      return {
+        isSaving: false,
+        isDirty: isCurrentRevision ? false : state.isDirty,
+        project: isCurrentRevision ? savedProject : state.project,
+        lastSavedAt: isCurrentRevision ? savedAt : state.lastSavedAt,
+        projects: isCurrentRevision ? mergeProjects(state.projects, savedProject) : state.projects,
+      };
     });
   },
 
@@ -199,15 +223,16 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       },
     });
 
-    await projectStorage.saveProjectRecord(project);
+    const savedProject = await projectStorage.saveProjectRecord(project);
 
     set((state) => ({
-      project: state.project.id === projectId ? project : state.project,
-      projects: mergeProjects(state.projects, project),
-      lastSavedAt: state.project.id === projectId ? project.metadata.updatedAt : state.lastSavedAt,
+      project: state.project.id === projectId ? savedProject : state.project,
+      projects: mergeProjects(state.projects, savedProject),
+      isDirty: state.project.id === projectId ? false : state.isDirty,
+      lastSavedAt: state.project.id === projectId ? savedProject.metadata.updatedAt : state.lastSavedAt,
     }));
 
-    return project;
+    return savedProject;
   },
 
   createProject: async (data) => {
@@ -218,15 +243,31 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       activeProjectId: project.id,
       projects: mergeProjects(get().projects, project),
       isSaving: true,
+      isDirty: false,
+      isHydrated: true,
       lastSavedAt: null,
     });
 
-    await projectStorage.saveProject(project);
+    markPerformance("create-project-state-ready");
+    void projectStorage.saveProject(project).then((savedProject) => {
+      set((state) => {
+        const isCurrentRevision =
+          state.project.id === savedProject.id &&
+          state.project.metadata.updatedAt === project.metadata.updatedAt;
 
-    set({
-      isSaving: false,
-      lastSavedAt: project.metadata.updatedAt,
-      projects: mergeProjects(get().projects, project),
+        return {
+          isSaving: false,
+          isDirty: isCurrentRevision ? false : state.isDirty,
+          project: isCurrentRevision ? savedProject : state.project,
+          lastSavedAt: isCurrentRevision ? savedProject.metadata.updatedAt : state.lastSavedAt,
+          projects: isCurrentRevision ? mergeProjects(state.projects, savedProject) : state.projects,
+        };
+      });
+    }).catch(() => {
+      set((state) => ({
+        isSaving: false,
+        isDirty: state.project.id === project.id ? true : state.isDirty,
+      }));
     });
 
     return project;
@@ -237,13 +278,13 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       ? normalizeFormiqProject(data)
       : createFormiqProject(data);
 
-    await projectStorage.saveProjectRecord(project);
+    const savedProject = await projectStorage.saveProjectRecord(project);
 
     set((state) => ({
-      projects: mergeProjects(state.projects, project),
+      projects: mergeProjects(state.projects, savedProject),
     }));
 
-    return project;
+    return savedProject;
   },
 
   importProject: async (data) => {
@@ -273,13 +314,13 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       ].slice(0, 200),
     });
 
-    await projectStorage.saveProjectRecord(project);
+    const savedProject = await projectStorage.saveProjectRecord(project);
 
     set((state) => ({
-      projects: mergeProjects(state.projects, project),
+      projects: mergeProjects(state.projects, savedProject),
     }));
 
-    return project;
+    return savedProject;
   },
 
   updateProject: (
@@ -303,6 +344,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         project: updatedProject,
         activeProjectId: nextProject.id,
         projects: mergeProjects(state.projects, updatedProject),
+        isDirty: true,
       };
     });
   },
@@ -356,6 +398,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       project: state.activeProjectId === projectId ? nextProject : state.project,
       activeProjectId: state.activeProjectId === projectId ? nextProject.id : state.activeProjectId,
       lastSavedAt: state.activeProjectId === projectId ? nextProject.metadata.updatedAt : state.lastSavedAt,
+      isDirty: state.activeProjectId === projectId ? false : state.isDirty,
     }));
   },
 
@@ -376,6 +419,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
           updatedAt: new Date().toISOString(),
         },
       },
+      isDirty: true,
     })),
 
   syncProjectFromLayers: (layers, bounds) =>
@@ -392,12 +436,17 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
           }
         ),
         activeProjectId: project.id,
+        isDirty: true,
       };
     }),
 
   syncProjectFromFusion: (fusionResult) =>
     set((state) => {
-      const project = buildFormiqProjectFromFusionResult(fusionResult, state.project);
+      const activeTerritory = state.project.territories.find((territory) => territory.id === state.project.activeTerritoryId);
+      const area = activeTerritory
+        ? { shape: activeTerritory.shape ?? "polygon", bounds: activeTerritory.bounds, geometry: activeTerritory.geometry }
+        : null;
+      const project = clipProjectToArea(buildFormiqProjectFromFusionResult(fusionResult, state.project), area);
       const hasActiveTerritory = project.territories.some(
         (territory) => territory.id === project.activeTerritoryId
       );
@@ -420,11 +469,16 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
           fusedFeatures: fusionResult.statistics.fusedFeatureCount,
         }),
         activeProjectId: project.id,
+        isDirty: true,
       };
     }),
 
   createTerritoryFromSelection: (selection, name) =>
     get().updateProject((project) => {
+      const activeTerritory = project.territories.find((territory) => territory.id === project.activeTerritoryId);
+      if (activeTerritory?.locked || activeTerritory?.status === "importing") {
+        return project;
+      }
       const now = new Date().toISOString();
       const territory: FormiqTerritory = {
         id: createEntityId(),
@@ -446,6 +500,8 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         createdAt: now,
         updatedAt: now,
         isActive: true,
+        status: "ready",
+        locked: false,
       };
 
       const nextProject: FormiqProjectData = {
@@ -484,7 +540,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
 
       const existingTerritory = project.territories.find((territory) => territory.id === targetTerritoryId);
 
-      if (!existingTerritory) {
+      if (!existingTerritory || existingTerritory.locked || existingTerritory.status === "importing" || existingTerritory.status === "imported") {
         return project;
       }
 
@@ -502,6 +558,8 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
                   bounds: expandBounds(selection.bounds, territory.loadingBuffer.distanceMeters),
                 },
                 updatedAt: new Date().toISOString(),
+                status: "editing",
+                locked: false,
               }
             : territory
         ),
@@ -521,6 +579,59 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         }
       );
     }),
+
+  setTerritoryStatus: (status, territoryId, revision) =>
+    get().updateProject((project) => {
+      const targetTerritoryId = territoryId ?? project.activeTerritoryId;
+      if (!targetTerritoryId) return project;
+      const now = new Date().toISOString();
+      return {
+        ...project,
+        territories: project.territories.map((territory) =>
+          territory.id === targetTerritoryId
+            ? {
+                ...territory,
+                status,
+                locked: status === "importing" || status === "imported",
+                importRevision: revision ?? territory.importRevision,
+                updatedAt: now,
+              }
+            : territory
+        ),
+      };
+    }),
+
+  unlockAndResetTerritory: async (territoryId) => {
+    const targetTerritoryId = territoryId ?? get().project.activeTerritoryId;
+    if (!targetTerritoryId) return false;
+    const territory = get().project.territories.find((item) => item.id === targetTerritoryId);
+    if (!territory) return false;
+    if (typeof window !== "undefined" && !window.confirm("Разблокировать территорию? Импортированные данные и связанные результаты будут удалены.")) {
+      return false;
+    }
+    await layerChunkStorage.deleteProjectChunks(get().project.id);
+    const now = new Date().toISOString();
+    get().updateProject((project) => ({
+      ...project,
+      territories: project.territories.map((item) =>
+        item.id === targetTerritoryId
+          ? {
+              ...item,
+              status: "editing",
+              locked: false,
+              importRevision: undefined,
+              analysisResultIds: [],
+              thematicMapIds: [],
+              updatedAt: now,
+            }
+          : item
+      ),
+      analysisResults: {},
+      thematicMaps: {},
+      exportArtifacts: [],
+    }));
+    return true;
+  },
 
   setActiveTerritory: (territoryId) =>
     get().updateProject((project) => {
@@ -554,6 +665,18 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         { territoryId }
       );
     }),
+
+  clearActiveTerritory: async () => {
+    await layerChunkStorage.deleteProjectChunks(get().project.id);
+    get().updateProject((project) => ({
+      ...project,
+      territories: project.territories.filter((territory) => territory.id !== project.activeTerritoryId),
+      activeTerritoryId: null,
+      buildings: [], roads: [], vegetation: [], water: [], terrain: [], boundaries: [], poi: [], transitStops: [],
+      layers: [], layerSystem: [], fusion: null,
+      analysisResults: {}, thematicMaps: {}, exportArtifacts: [],
+    }));
+  },
 
   setWorkspaceMode: (mode) =>
     get().updateProject((project) =>
@@ -625,6 +748,8 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       ...project,
       importSettings: {
         ...project.importSettings,
+        includeTerrain:
+          source === "copernicus-dem" ? enabled : project.importSettings.includeTerrain,
         sources: {
           ...project.importSettings.sources,
           [source]: enabled,
@@ -669,16 +794,23 @@ async function updateStoredProject(
     },
   });
 
-  await projectStorage.saveProjectRecord(updatedProject);
+  const savedProject = await projectStorage.saveProjectRecord(updatedProject);
 
   set((state) => ({
-    project: state.project.id === projectId ? updatedProject : state.project,
+    project: state.project.id === projectId ? savedProject : state.project,
     activeProjectId: state.activeProjectId,
-    projects: mergeProjects(state.projects, updatedProject),
-    lastSavedAt: state.project.id === projectId ? updatedProject.metadata.updatedAt : state.lastSavedAt,
+    projects: mergeProjects(state.projects, savedProject),
+    isDirty: state.project.id === projectId ? false : state.isDirty,
+    lastSavedAt: state.project.id === projectId ? savedProject.metadata.updatedAt : state.lastSavedAt,
   }));
 
-  return updatedProject;
+  return savedProject;
+}
+
+function markPerformance(name: string): void {
+  if (typeof performance === "undefined") return;
+  performance.clearMarks(name);
+  performance.mark(name);
 }
 
 function mergeProjects(projects: FormiqProjectData[], project: FormiqProjectData): FormiqProjectData[] {

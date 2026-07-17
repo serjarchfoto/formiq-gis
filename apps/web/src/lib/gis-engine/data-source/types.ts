@@ -67,6 +67,7 @@ export interface IDataSource {
 export interface DataSourceEngineImportOptions {
   sources: DataSourceKind[];
   bbox: BoundingBox;
+  signal?: AbortSignal;
   forceRefresh?: boolean;
   onSourceStart?: (event: DataSourceHealth) => void;
   onSourceComplete?: (result: DataSourceResult) => void;

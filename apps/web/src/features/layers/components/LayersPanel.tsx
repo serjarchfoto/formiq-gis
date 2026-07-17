@@ -8,6 +8,7 @@ import { useProjectStore } from "@/store/project";
 import { useUIStore } from "@/store/ui";
 import type { CartographicThemeId, RoadWidthMode } from "@/types/formiq";
 import type { GISLayer } from "@/types/gis";
+import SelectionToolbar from "@/features/selection";
 
 const text = {
   layers: "Слои",
@@ -87,7 +88,9 @@ export default function LayersPanel() {
   };
 
   return (
-    <aside className="absolute left-6 top-6 z-20 max-h-[calc(100%-3rem)] w-[320px] overflow-y-auto rounded-[20px] border border-white/70 bg-white/62 p-5 backdrop-blur-3xl">
+    <aside className="absolute left-6 top-6 z-20 flex max-h-[calc(100%-3rem)] w-[320px] flex-col overflow-hidden rounded-[20px] border border-white/70 bg-white/62 backdrop-blur-3xl">
+      <SelectionToolbar />
+      <div className="min-h-0 flex-1 overflow-y-auto p-5">
       <div className="mb-5 flex items-center justify-between gap-3">
         <h2 className="text-xl font-semibold text-[#0F172A]">{text.layers}</h2>
         <button
@@ -183,6 +186,7 @@ export default function LayersPanel() {
         </ControlLabel>
       </div>
 
+      </div>
       {isImportDialogOpen ? (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F172A]/35 px-4 backdrop-blur-sm"

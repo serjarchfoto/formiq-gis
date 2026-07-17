@@ -16,6 +16,7 @@ export function createThematicFeature(
       category,
       legendGroup,
       renderColor,
+      geometrySource: entity.source,
     },
     geometry: toGeoJsonGeometry(entity.geometry),
   };

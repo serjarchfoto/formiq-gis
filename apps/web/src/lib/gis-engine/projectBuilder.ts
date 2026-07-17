@@ -55,6 +55,10 @@ export const DEFAULT_IMPORT_SOURCE_SETTINGS: Record<ImportSourceId, boolean> =
   }, {} as Record<ImportSourceId, boolean>);
 
 export function isImportSourceEnabledByDefault(source: ImportSourceId): boolean {
+  return source !== "copernicus-dem" && isImportSourceSupported(source);
+}
+
+export function isImportSourceSupported(source: ImportSourceId): boolean {
   return enabledImportSourceSet.has(source);
 }
 
@@ -184,6 +188,7 @@ export function createEmptyFormiqProject(): FormiqProjectData {
     fusion: null,
     importSettings: {
       sources: DEFAULT_IMPORT_SOURCE_SETTINGS,
+      includeTerrain: false,
       duplicatePolicy: "prefer-primary",
       splitLargeRequests: true,
     },
@@ -335,7 +340,11 @@ export function normalizeFormiqProject(project: Partial<FormiqProjectData>): For
     lastOpenedAt: project.lastOpenedAt ?? fallback.lastOpenedAt,
     crs: project.crs ?? fallback.crs,
     units: project.units ?? fallback.units,
-    territories: project.territories ?? fallback.territories,
+    territories: (project.territories ?? fallback.territories).map((territory) => ({
+      ...territory,
+      status: territory.status ?? (territory.isActive ? "ready" : "empty"),
+      locked: territory.locked ?? false,
+    })),
     activeTerritoryId: project.activeTerritoryId ?? fallback.activeTerritoryId,
     settings: {
       display: {
@@ -385,7 +394,9 @@ export function normalizeFormiqProject(project: Partial<FormiqProjectData>): For
       sources: {
         ...fallback.importSettings.sources,
         ...project.importSettings?.sources,
+        "copernicus-dem": project.importSettings?.includeTerrain ?? false,
       },
+      includeTerrain: project.importSettings?.includeTerrain ?? false,
       duplicatePolicy: project.importSettings?.duplicatePolicy ?? fallback.importSettings.duplicatePolicy,
       splitLargeRequests:
         project.importSettings?.splitLargeRequests ?? fallback.importSettings.splitLargeRequests,
@@ -491,21 +502,35 @@ export function buildFormiqProjectFromFusionResult(
     sourceStates: fusionResult.sourceStates,
     statistics: fusionResult.statistics,
   };
+  const layerData = fusionResult.layers
+    .map((layer) => layer.data)
+    .filter((layerData): layerData is FormiqLayerData => Boolean(layerData));
+  // Some chunked/legacy providers return renderable layer data while their
+  // canonical collection is empty. Recover the canonical arrays here so the
+  // analysis workspace sees the same imported objects as the map.
+  const collections = {
+    buildings: fusionResult.collections.buildings.length ? fusionResult.collections.buildings : layerData.flatMap((layer) => layer.buildings),
+    roads: fusionResult.collections.roads.length ? fusionResult.collections.roads : layerData.flatMap((layer) => layer.roads),
+    vegetation: fusionResult.collections.vegetation.length ? fusionResult.collections.vegetation : layerData.flatMap((layer) => layer.vegetation),
+    water: fusionResult.collections.water.length ? fusionResult.collections.water : layerData.flatMap((layer) => layer.water),
+    terrain: fusionResult.collections.terrain.length ? fusionResult.collections.terrain : layerData.flatMap((layer) => layer.terrain),
+    boundaries: fusionResult.collections.boundaries.length ? fusionResult.collections.boundaries : layerData.flatMap((layer) => layer.boundaries ?? []),
+    poi: fusionResult.collections.poi.length ? fusionResult.collections.poi : layerData.flatMap((layer) => layer.poi ?? []),
+    transitStops: fusionResult.collections.transitStops.length ? fusionResult.collections.transitStops : layerData.flatMap((layer) => layer.transitStops ?? []),
+  };
 
   return enrichProjectWithAnalysisCache({
     ...normalizedProject,
-    layers: fusionResult.layers
-      .map((layer) => layer.data)
-      .filter((layerData): layerData is FormiqLayerData => Boolean(layerData)),
+    layers: layerData,
     layerSystem: mergeProjectLayerSystem(normalizedProject.layerSystem, fusionResult.layers),
-    buildings: fusionResult.collections.buildings,
-    roads: fusionResult.collections.roads,
-    vegetation: fusionResult.collections.vegetation,
-    water: fusionResult.collections.water,
-    terrain: fusionResult.collections.terrain,
-    boundaries: fusionResult.collections.boundaries,
-    poi: fusionResult.collections.poi,
-    transitStops: fusionResult.collections.transitStops,
+    buildings: collections.buildings,
+    roads: collections.roads,
+    vegetation: collections.vegetation,
+    water: collections.water,
+    terrain: collections.terrain,
+    boundaries: collections.boundaries,
+    poi: collections.poi,
+    transitStops: collections.transitStops,
     dataSources: fusionResult.dataSources,
     fusion: fusionSnapshot,
     metadata: {

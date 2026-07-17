@@ -30,6 +30,7 @@ interface MapStore {
   measurementMode: MeasurementMode;
   measurementPoints: Position[];
   selectedObject: SelectedMapObject | null;
+  hoveredObject: SelectedMapObject | null;
   pmTilesSources: OfflineTileSource[];
   setViewport: (viewport: MapViewport) => void;
   setCursorCoordinates: (coordinates: CursorCoordinates | null) => void;
@@ -38,6 +39,7 @@ interface MapStore {
   addMeasurementPoint: (point: Position) => void;
   clearMeasurement: () => void;
   setSelectedObject: (object: SelectedMapObject | null) => void;
+  setHoveredObject: (object: SelectedMapObject | null) => void;
   addPMTilesSource: (source: OfflineTileSource) => void;
   removePMTilesSource: (id: string) => void;
 }
@@ -52,6 +54,7 @@ export const useMapStore = create<MapStore>((set) => ({
   measurementMode: "none",
   measurementPoints: [],
   selectedObject: null,
+  hoveredObject: null,
   pmTilesSources: [],
   setViewport: (viewport) => set({ viewport }),
   setCursorCoordinates: (cursorCoordinates) => set({ cursorCoordinates }),
@@ -72,6 +75,7 @@ export const useMapStore = create<MapStore>((set) => ({
       measurementPoints: [],
     }),
   setSelectedObject: (selectedObject) => set({ selectedObject }),
+  setHoveredObject: (hoveredObject) => set({ hoveredObject }),
   addPMTilesSource: (source) =>
     set((state) => ({
       pmTilesSources: [

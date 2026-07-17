@@ -258,7 +258,10 @@ function createOpenTopographyCacheKey(bbox: DataProxyBbox, demType: string, maxS
 function getOpenTopographyCachePath(cacheKey: string): string {
   const cacheRoot = process.env.OPEN_TOPOGRAPHY_CACHE_PATH?.trim()
     ? path.resolve(/* turbopackIgnore: true */ process.env.OPEN_TOPOGRAPHY_CACHE_PATH)
-    : path.join(/* turbopackIgnore: true */ process.cwd(), ".cache/formiq/opentopography");
+    : path.join(
+        /* turbopackIgnore: true */ process.env.VERCEL ? "/tmp" : process.cwd(),
+        "formiq/opentopography"
+      );
 
   return path.join(cacheRoot, `${cacheKey}.json`);
 }

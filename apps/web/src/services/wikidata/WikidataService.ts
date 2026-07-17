@@ -19,20 +19,8 @@ export class WikidataService {
       process.env.NEXT_PUBLIC_WIKIDATA_API_URL || "/api/data/wikidata"
   ) {}
 
-  async loadByBoundingBox(bounds: BoundingBox): Promise<WikidataEntity[]> {
-    const url = `${this.endpoint}?bbox=${encodeURIComponent(formatBbox(bounds))}`;
-    const response = await fetch(url, {
-      headers: {
-        Accept: "application/geo+json, application/json",
-      },
-      cache: "no-store",
-    });
-
-    if (!response.ok) {
-      throw new Error(`Wikidata request failed with status ${response.status}.`);
-    }
-
-    const payload = (await response.json()) as WikidataProxyResponse;
+  async loadByBoundingBox(bounds: BoundingBox, signal?: AbortSignal): Promise<WikidataEntity[]> {
+    const payload = await this.loadGeoJsonByBoundingBox(bounds, signal);
 
     return payload.features.map((feature) => ({
       id: String(feature.id ?? feature.properties?.wikidataId ?? ""),
@@ -48,9 +36,26 @@ export class WikidataService {
       },
     }));
   }
+
+  async loadGeoJsonByBoundingBox(bounds: BoundingBox, signal?: AbortSignal): Promise<WikidataProxyResponse> {
+    const url = `${this.endpoint}?bbox=${encodeURIComponent(formatBbox(bounds))}`;
+    const response = await fetch(url, {
+      headers: {
+        Accept: "application/geo+json, application/json",
+      },
+      cache: "no-store",
+      signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Wikidata request failed with status ${response.status}.`);
+    }
+
+    return response.json() as Promise<WikidataProxyResponse>;
+  }
 }
 
-type WikidataProxyResponse = FeatureCollection<
+export type WikidataProxyResponse = FeatureCollection<
   Point,
   {
     wikidataId?: unknown;

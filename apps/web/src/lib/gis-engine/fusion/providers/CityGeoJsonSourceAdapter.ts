@@ -4,7 +4,13 @@ import { GeoJsonProxySourceAdapter, normalizeGeneralGeoJsonFeature } from "./Geo
 
 export class CityGeoJsonSourceAdapter extends GeoJsonProxySourceAdapter {
   constructor() {
-    super("city-geojson", "/api/data/city-geojson", process.env.NEXT_PUBLIC_CITY_GEOJSON_API_URL);
+    super(
+      "city-geojson",
+      "/api/data/city-geojson",
+      process.env.NEXT_PUBLIC_CITY_GEOJSON_API_URL,
+      "general",
+      "city-geojson"
+    );
   }
 
   protected normalizeFeature(feature: Feature<Geometry, GeoJsonProperties>, index: number): SourceFeature[] {

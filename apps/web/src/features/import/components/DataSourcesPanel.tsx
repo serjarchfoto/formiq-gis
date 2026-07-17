@@ -1,7 +1,7 @@
 "use client";
 
 import { getImportSourceLabel } from "@/features/import";
-import { DEFAULT_IMPORT_SOURCE_ORDER, isImportSourceEnabledByDefault } from "@/lib";
+import { DEFAULT_IMPORT_SOURCE_ORDER, isImportSourceSupported } from "@/lib";
 import { useProjectStore } from "@/store/project";
 import type { ImportSourceId, SourceSyncState } from "@/types/formiq";
 
@@ -39,9 +39,14 @@ export default function DataSourcesPanel() {
 
       <div className="mt-4 space-y-2">
         {DEFAULT_IMPORT_SOURCE_ORDER.map((source) => {
-          const isEnabledSource = isImportSourceEnabledByDefault(source);
+          const isEnabledSource = isImportSourceSupported(source);
+          const isTerrainSource = source === "copernicus-dem";
+          const isSelected =
+            isEnabledSource &&
+            sources[source] &&
+            (!isTerrainSource || project.importSettings.includeTerrain);
           const sourceState = project.fusion?.sourceStates.find((state) => state.source === source);
-          const status = getSourceStatus(Boolean(sources[source]), sourceState?.status);
+          const status = getSourceStatus(isSelected, sourceState?.status);
 
           return (
             <label
@@ -55,6 +60,11 @@ export default function DataSourcesPanel() {
                 <span className="mt-1 block truncate text-[12px] text-[#64748B]">
                   {descriptions[source]}
                 </span>
+                {isTerrainSource ? (
+                  <span className="mt-1.5 inline-flex rounded-full bg-[#FEF3C7] px-2 py-1 text-[11px] font-semibold text-[#92400E]">
+                    Тяжёлый слой · загружается по запросу
+                  </span>
+                ) : null}
               </span>
               <span className="flex shrink-0 items-center gap-2">
                 {!isEnabledSource ? (
@@ -67,7 +77,7 @@ export default function DataSourcesPanel() {
                 <input
                   data-testid={`source-toggle-${source}`}
                   type="checkbox"
-                  checked={isEnabledSource && sources[source]}
+                  checked={isSelected}
                   disabled={!isEnabledSource}
                   onChange={(event) =>
                     setImportSourceEnabled(source as ImportSourceId, event.target.checked)

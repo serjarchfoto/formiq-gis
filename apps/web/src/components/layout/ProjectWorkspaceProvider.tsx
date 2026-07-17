@@ -8,6 +8,7 @@ import { useSelectionStore } from "@/store/selection";
 export default function ProjectWorkspaceProvider({ children }: { children: React.ReactNode }) {
   const project = useProjectStore((state) => state.project);
   const isHydrated = useProjectStore((state) => state.isHydrated);
+  const isDirty = useProjectStore((state) => state.isDirty);
   const hydrateProject = useProjectStore((state) => state.hydrateProject);
   const openProject = useProjectStore((state) => state.openProject);
   const saveProject = useProjectStore((state) => state.saveProject);
@@ -50,7 +51,7 @@ export default function ProjectWorkspaceProvider({ children }: { children: React
   }, [project.activeTerritoryId, project.territories, syncSelectionFromProject]);
 
   useEffect(() => {
-    if (!isHydrated) {
+    if (!isHydrated || !isDirty) {
       return;
     }
 
@@ -59,7 +60,7 @@ export default function ProjectWorkspaceProvider({ children }: { children: React
     }, 600);
 
     return () => window.clearTimeout(timeoutId);
-  }, [isHydrated, project, saveProject]);
+  }, [isDirty, isHydrated, project, saveProject]);
 
   return children;
 }

@@ -38,6 +38,12 @@ export type DataSourceKind =
   | "sentinel-2"
   | "copernicus-dem"
   | "open-topography"
+  | "nasa-srtm"
+  | "open-elevation"
+  | "aster-gdem"
+  | "mapbox-terrain"
+  | "open-aerial-map"
+  | "national-geospatial-portal"
   | "gtfs"
   | "open-weather"
   | "pmtiles"
@@ -414,6 +420,16 @@ export interface TerritoryAnalysisSettings {
   calculateOnlyInsideWorkingArea: boolean;
 }
 
+export type TerritoryStatus = "empty" | "editing" | "ready" | "importing" | "imported" | "failed";
+
+export interface TerritoryImportRevision {
+  bounds: BoundingBox;
+  startedAt: string;
+  completedAt?: string;
+  failedAt?: string;
+  sessionId?: string;
+}
+
 export interface FormiqTerritory {
   id: string;
   name: string;
@@ -428,6 +444,9 @@ export interface FormiqTerritory {
   createdAt: string;
   updatedAt: string;
   isActive: boolean;
+  status: TerritoryStatus;
+  locked: boolean;
+  importRevision?: TerritoryImportRevision;
 }
 
 export interface ProjectDisplaySettings {
@@ -622,6 +641,7 @@ export interface ProjectAIContext {
 
 export interface ProjectImportSettings {
   sources: Record<ImportSourceId, boolean>;
+  includeTerrain: boolean;
   duplicatePolicy: "prefer-primary" | "keep-separate";
   splitLargeRequests: boolean;
 }
@@ -772,5 +792,6 @@ export interface FormiqProjectData {
     createdAt: string;
     updatedAt: string;
     bounds?: BoundingBox;
+    serializedSize?: number;
   };
 }

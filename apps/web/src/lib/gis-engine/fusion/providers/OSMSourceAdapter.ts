@@ -1,10 +1,15 @@
 import type { Geometry } from "geojson";
 import type { BoundingBox } from "@/types/gis";
-import type { SourceAdapter, SourceAdapterResult, SourceFeature } from "@/lib/gis-engine/fusion/types";
+import type {
+  SourceAdapter,
+  SourceAdapterRawResult,
+  SourceAdapterResult,
+  SourceFeature,
+} from "@/lib/gis-engine/fusion/types";
 import { OSMService } from "@/services/osm";
 import type { OverpassElement } from "@/services/overpass";
 
-const MAX_TILE_COUNT_PER_AXIS = 4;
+const MAX_TILE_COUNT_PER_AXIS = 12;
 const TARGET_TILE_SIZE_DEGREES = 0.035;
 const TILED_IMPORT_THRESHOLD_DEGREES = 0.05;
 
@@ -14,10 +19,9 @@ export class OSMSourceAdapter implements SourceAdapter {
 
   constructor(private readonly service = new OSMService()) {}
 
-  async fetch({ bounds }: Parameters<SourceAdapter["fetch"]>[0]): Promise<SourceAdapterResult> {
-    const responses = shouldUseTiledImport(bounds)
-      ? await this.loadByTiles(bounds)
-      : [await this.service.loadByBoundingBox(bounds)];
+  async fetch({ bounds, signal }: Parameters<SourceAdapter["fetch"]>[0]): Promise<SourceAdapterResult> {
+    const raw = await this.fetchRaw({ bounds, signal });
+    const responses = raw.payload.format === "overpass" ? raw.payload.responses : [];
     const features = deduplicateFeatures(
       responses.flatMap((response) => response.elements.flatMap((element) => normalizeOverpassElement(element)))
     );
@@ -29,24 +33,42 @@ export class OSMSourceAdapter implements SourceAdapter {
     };
   }
 
-  private async loadByTiles(bounds: BoundingBox) {
+  async fetchRaw({ bounds, signal }: Parameters<SourceAdapter["fetch"]>[0]): Promise<SourceAdapterRawResult> {
+    const tiledResult = shouldUseTiledImport(bounds)
+      ? await this.loadByTiles(bounds, signal)
+      : { responses: [await this.service.loadByBoundingBox(bounds, signal)], errors: [] as Error[] };
+
+    return {
+      source: this.source,
+      version: this.version,
+      payload: { format: "overpass", responses: tiledResult.responses },
+      metadata: tiledResult.errors.length > 0
+        ? {
+            status: "partial",
+            message: `Overpass: пропущено ${tiledResult.errors.length} из ${tiledResult.responses.length + tiledResult.errors.length} подзапросов.`,
+            failedRequests: tiledResult.errors.length,
+          }
+        : { status: "ready" },
+    };
+  }
+
+  private async loadByTiles(bounds: BoundingBox, signal?: AbortSignal): Promise<{
+    responses: Awaited<ReturnType<OSMService["loadByBoundingBox"]>>[];
+    errors: Error[];
+  }> {
     const tiles = splitBoundingBox(bounds);
     const responses: Awaited<ReturnType<OSMService["loadByBoundingBox"]>>[] = [];
     const errors: Error[] = [];
 
     for (const tile of tiles) {
       try {
-        responses.push(await this.service.loadByBoundingBox(tile));
+        responses.push(await this.service.loadByBoundingBox(tile, signal));
       } catch (error) {
         errors.push(error instanceof Error ? error : new Error("Unknown Overpass tile error."));
       }
     }
 
-    if (responses.length === 0) {
-      throw errors[0] ?? new Error("Overpass tiled import failed.");
-    }
-
-    return responses;
+    return { responses, errors };
   }
 }
 
@@ -99,7 +121,7 @@ function deduplicateFeatures(features: SourceFeature[]): SourceFeature[] {
   });
 }
 
-function normalizeOverpassElement(element: OverpassElement): SourceFeature[] {
+export function normalizeOverpassElement(element: OverpassElement): SourceFeature[] {
   const tags = element.tags ?? {};
   const geometry = toGeometry(element);
 
@@ -114,6 +136,28 @@ function normalizeOverpassElement(element: OverpassElement): SourceFeature[] {
     tags,
     names: tags.name ? { default: tags.name } : undefined,
   };
+
+  if (geometry.type === "Point") {
+    const transit = tags.public_transport || tags.highway === "bus_stop" || tags.railway;
+    if (transit) {
+      return [{
+        ...base,
+        kind: "transit-stop",
+        network: tags.operator ?? tags.network ?? null,
+        stopType: tags.public_transport ?? tags.highway ?? tags.railway ?? null,
+        name: tags.name ?? null,
+      }];
+    }
+    if (tags.amenity || tags.shop || tags.tourism || tags.office) {
+      return [{
+        ...base,
+        kind: "poi",
+        category: tags.amenity ?? tags.shop ?? tags.tourism ?? tags.office ?? "poi",
+        subtype: tags["amenity:type"] ?? null,
+        name: tags.name ?? null,
+      }];
+    }
+  }
 
   if (tags.building) {
     return [
@@ -171,8 +215,16 @@ function normalizeOverpassElement(element: OverpassElement): SourceFeature[] {
 function toGeometry(element: OverpassElement): Geometry | null {
   const coordinates = (element.geometry ?? []).map((point) => [point.lon, point.lat]);
 
-  if (coordinates.length < 2) {
+  if (coordinates.length === 0 && element.center) {
+    return { type: "Point", coordinates: [element.center.lon, element.center.lat] };
+  }
+
+  if (coordinates.length === 0) {
     return null;
+  }
+
+  if (coordinates.length === 1) {
+    return { type: "Point", coordinates: coordinates[0] };
   }
 
   const first = coordinates[0];

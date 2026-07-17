@@ -13,6 +13,7 @@ import {
   featureIntersectsBbox,
   filterFeatureCollectionByBbox,
   parseBboxParam,
+  resolveDatasetPath,
 } from "./readGeoJsonDataset";
 
 interface DatasetLinkRow {
@@ -33,8 +34,8 @@ interface MicrosoftDatasetOptions {
 }
 
 const DATASET_ZOOM = 9;
-const DEFAULT_MAX_FILES = 2;
-const DEFAULT_MAX_FEATURES = 1500;
+export const DEFAULT_MICROSOFT_BUILDINGS_MAX_FILES = 64;
+export const DEFAULT_MICROSOFT_BUILDINGS_MAX_FEATURES = 500_000;
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 120000;
 const DEFAULT_MAX_PARTITION_BYTES = 128 * 1024 * 1024;
 
@@ -42,8 +43,8 @@ export async function readMicrosoftBuildingsDataset({
   sourceId,
   bbox,
   indexPath,
-  maxFiles = parsePositiveInt(process.env.MICROSOFT_BUILDINGS_MAX_FILES, DEFAULT_MAX_FILES),
-  maxFeatures = parsePositiveInt(process.env.MICROSOFT_BUILDINGS_MAX_FEATURES, DEFAULT_MAX_FEATURES),
+  maxFiles = parsePositiveInt(process.env.MICROSOFT_BUILDINGS_MAX_FILES, DEFAULT_MICROSOFT_BUILDINGS_MAX_FILES),
+  maxFeatures = parsePositiveInt(process.env.MICROSOFT_BUILDINGS_MAX_FEATURES, DEFAULT_MICROSOFT_BUILDINGS_MAX_FEATURES),
   maxPartitionBytes = parsePositiveInt(
     process.env.MICROSOFT_BUILDINGS_MAX_PARTITION_BYTES,
     DEFAULT_MAX_PARTITION_BYTES
@@ -62,7 +63,8 @@ export async function readMicrosoftBuildingsDataset({
 
   const matchingQuadKeys = getQuadKeysForBbox(bbox, DATASET_ZOOM);
   const rows = await readDatasetLinks(indexPath);
-  const matchingRows = rows.filter((row) => matchingQuadKeys.has(row.quadKey)).slice(0, maxFiles);
+  const allMatchingRows = rows.filter((row) => matchingQuadKeys.has(row.quadKey));
+  const matchingRows = allMatchingRows.slice(0, maxFiles);
 
   if (matchingRows.length === 0) {
     return createDataProxyCollection(
@@ -97,10 +99,15 @@ export async function readMicrosoftBuildingsDataset({
   }
 
   const filtered = filterFeatureCollectionByBbox({ type: "FeatureCollection", features }, bbox);
-  const status = filtered.features.length > 0 ? "ready" : errors.length === matchingRows.length ? "offline" : "ready";
+  const truncatedByFiles = matchingRows.length < allMatchingRows.length;
+  const truncatedByFeatures = features.length >= maxFeatures;
+  const truncated = truncatedByFiles || truncatedByFeatures || errors.length > 0;
+  const status = truncated ? "error" : filtered.features.length > 0 ? "ready" : errors.length === matchingRows.length ? "offline" : "ready";
   const message =
     status === "ready"
-      ? `Loaded ${filtered.features.length} Microsoft buildings from ${matchingRows.length} dataset partition(s)`
+      ? `Loaded ${filtered.features.length} Microsoft buildings from ${matchingRows.length}/${allMatchingRows.length} dataset partition(s)`
+      : status === "error"
+        ? `Microsoft dataset is incomplete: loaded ${filtered.features.length} buildings from ${matchingRows.length}/${allMatchingRows.length} partition(s). Increase configured limits or retry failed partitions.`
       : errors[0] ?? "bbox returned 0 Microsoft buildings";
   const response = createDataProxyCollection(sourceId, bbox, indexPath, filtered.features, status, message);
 
@@ -109,30 +116,34 @@ export async function readMicrosoftBuildingsDataset({
     metadata: {
       ...response.metadata,
       datasetFiles: matchingRows.length,
+      matchingDatasetFiles: allMatchingRows.length,
       matchedQuadKeys: matchingQuadKeys.size,
       maxFiles,
       maxFeatures,
       maxPartitionBytes,
       oversizedPartitions: oversized.length,
       errors: errors.slice(0, 5),
+      truncated,
+      truncatedByFiles,
+      truncatedByFeatures,
     } as DataProxyFeatureCollection["metadata"] & {
       datasetFiles: number;
+      matchingDatasetFiles: number;
       matchedQuadKeys: number;
       maxFiles: number;
       maxFeatures: number;
       maxPartitionBytes: number;
       oversizedPartitions: number;
       errors: string[];
+      truncated: boolean;
+      truncatedByFiles: boolean;
+      truncatedByFeatures: boolean;
     },
   };
 }
 
 export function resolveMicrosoftDatasetIndexPath(envValue: string | undefined): string {
-  if (envValue && envValue.trim().length > 0) {
-    return path.resolve(/* turbopackIgnore: true */ envValue);
-  }
-
-  return path.join(/* turbopackIgnore: true */ process.cwd(), "data/microsoft-buildings/dataset-links.csv");
+  return resolveDatasetPath(envValue, "data/microsoft-buildings/dataset-links.csv");
 }
 
 export { parseBboxParam };
@@ -244,7 +255,10 @@ async function readMicrosoftPartitionCache(
 async function getCachedMicrosoftPartitionPath(row: DatasetLinkRow): Promise<string> {
   const cacheRoot = process.env.MICROSOFT_BUILDINGS_CACHE_PATH?.trim()
     ? path.resolve(/* turbopackIgnore: true */ process.env.MICROSOFT_BUILDINGS_CACHE_PATH)
-    : path.join(/* turbopackIgnore: true */ process.cwd(), ".cache/formiq/microsoft-buildings");
+    : path.join(
+        /* turbopackIgnore: true */ process.env.VERCEL ? "/tmp" : process.cwd(),
+        "formiq/microsoft-buildings"
+      );
   const fileName = `${sanitizePathPart(row.location)}-${sanitizePathPart(row.quadKey)}-${sanitizePathPart(row.uploadDate)}.partition`;
 
   return path.join(cacheRoot, fileName);

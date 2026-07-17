@@ -1,7 +1,9 @@
 "use client";
 
 import type { Feature, FeatureCollection, Geometry, Position } from "geojson";
+import { createDefaultExportEngine } from "@/lib/gis-engine/export";
 import type { ThematicMapDefinition } from "@/lib/gis-engine/thematic/types";
+import type { FormiqProjectData } from "@/types/formiq";
 
 export type ExportFormat = "png" | "pdf" | "geojson" | "psd" | "svg";
 
@@ -10,9 +12,19 @@ const SVG_HEIGHT = 1000;
 const SVG_PADDING = 64;
 
 export class ExportService {
-  async exportProject(_format: ExportFormat): Promise<never> {
-    void _format;
-    throw new Error("Project export is not implemented yet.");
+  async exportProject(
+    project: FormiqProjectData,
+    format: ExportFormat
+  ) {
+    if (format === "psd" || format === "svg") {
+      throw new Error(`${format.toUpperCase()} project export requires a presentation sheet.`);
+    }
+
+    return createDefaultExportEngine().exportProject(project, {
+      format,
+      filename: project.name,
+      quality: "standard",
+    });
   }
 
   exportThematicMap(

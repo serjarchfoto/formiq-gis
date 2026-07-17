@@ -1,4 +1,4 @@
-import type { Feature, FeatureCollection, Geometry, LineString, Point, Polygon, Position } from "geojson";
+import type { Feature, FeatureCollection, GeoJsonProperties, Geometry, LineString, Point, Polygon, Position } from "geojson";
 import type { FormiqTerritory } from "@/types/formiq";
 import type { BoundingBox } from "@/types/gis";
 import type { TerritorySelection, TerritorySelectionShape } from "@/store/selection";

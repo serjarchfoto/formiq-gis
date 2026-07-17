@@ -5,7 +5,7 @@ import type { BoundingBox } from "@/types/gis";
 export class OSMService {
   constructor(private readonly overpassService = new OverpassService()) {}
 
-  async loadByBoundingBox(bbox: BoundingBox): Promise<OverpassResponse> {
-    return this.overpassService.loadArchitecturalContext(bbox);
+  async loadByBoundingBox(bbox: BoundingBox, signal?: AbortSignal): Promise<OverpassResponse> {
+    return this.overpassService.loadArchitecturalContext(bbox, signal);
   }
 }

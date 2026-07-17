@@ -3,14 +3,19 @@
 import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import {
+  cancelChunkedTerritoryImport,
   DataSourcesPanel,
+  getBoundingBoxAreaSquareKilometers,
   getImportStageCount,
+  importTerritoryInChunks,
   importUnifiedContextByBoundingBox,
   type ImportProgressEvent,
 } from "@/features/import";
-import { DEFAULT_IMPORT_SOURCE_ORDER, isImportSourceEnabledByDefault } from "@/lib";
+import { DEFAULT_IMPORT_SOURCE_ORDER, isImportSourceSupported } from "@/lib";
+import { useImportStore } from "@/store/import";
 import { useProjectStore } from "@/store/project";
 import { useSelectionStore } from "@/store/selection";
+import { useUIStore } from "@/store/ui";
 import type { ImportSourceId } from "@/types/formiq";
 
 const text = {
@@ -18,6 +23,7 @@ const text = {
   searchPlaceholder: "Поиск адреса или объекта",
   importTerritory: "Импортировать территорию",
   importing: "Импорт...",
+  cancelImport: "Отменить импорт",
   sources: "Источники данных",
   noBounds: "Сначала выберите территорию на карте.",
   noSources: "Включите хотя бы один источник.",
@@ -30,11 +36,19 @@ const text = {
   help: "Справка",
 };
 
+const CHUNKED_IMPORT_AREA_THRESHOLD_SQUARE_KILOMETERS = 12;
+
 export default function TopBar() {
   const project = useProjectStore((state) => state.project);
   const isSaving = useProjectStore((state) => state.isSaving);
   const syncProjectFromFusion = useProjectStore((state) => state.syncProjectFromFusion);
+  const saveProject = useProjectStore((state) => state.saveProject);
+  const setTerritoryStatus = useProjectStore((state) => state.setTerritoryStatus);
   const selection = useSelectionStore((state) => state.selection);
+  const activeAnalysisLayerId = useUIStore((state) => state.activeAnalysisLayerId);
+  const chunkPhase = useImportStore((state) => state.phase);
+  const chunkProgress = useImportStore((state) => state.progress);
+  const chunkErrors = useImportStore((state) => state.errors);
   const [isImporting, setIsImporting] = useState(false);
   const [isSourcesPanelOpen, setIsSourcesPanelOpen] = useState(false);
   const [importLog, setImportLog] = useState<ImportProgressEvent[]>([]);
@@ -42,14 +56,18 @@ export default function TopBar() {
   const activeTerritory = project.territories.find(
     (territory) => territory.id === project.activeTerritoryId
   );
-  const importBounds = activeTerritory?.loadingBuffer.bounds ?? selection?.bounds ?? null;
+  const importBounds = activeTerritory?.bounds ?? selection?.bounds ?? null;
   const enabledSources = useMemo(
-    () =>
-      DEFAULT_IMPORT_SOURCE_ORDER.filter(
+    () => {
+      const terrainRequested = project.importSettings.includeTerrain || activeAnalysisLayerId === "terrain" || activeAnalysisLayerId === "elevation-analysis";
+      return DEFAULT_IMPORT_SOURCE_ORDER.filter(
         (source): source is ImportSourceId =>
-          isImportSourceEnabledByDefault(source) && project.importSettings.sources[source]
-      ),
-    [project.importSettings.sources]
+          isImportSourceSupported(source) &&
+          project.importSettings.sources[source] &&
+          (source !== "copernicus-dem" || terrainRequested)
+      );
+    },
+    [activeAnalysisLayerId, project.importSettings.includeTerrain, project.importSettings.sources]
   );
   const progressPercent =
     enabledSources.length === 0
@@ -59,8 +77,17 @@ export default function TopBar() {
             getImportStageCount(enabledSources)) *
             100
         );
+  const isChunkImportActive = isActiveChunkImportPhase(chunkPhase);
+  const visibleProgressPercent = isChunkImportActive || chunkPhase === "completed"
+    ? chunkProgress.percent
+    : progressPercent;
+  const visibleStatusMessage = getChunkStatusMessage(chunkPhase, chunkErrors) || statusMessage;
 
   const handleImport = async () => {
+    if (isChunkImportActive) {
+      cancelChunkedTerritoryImport();
+      return;
+    }
     if (isImporting) return;
 
     if (!importBounds) {
@@ -75,19 +102,67 @@ export default function TopBar() {
       return;
     }
 
+    if (activeTerritory?.status === "imported" || activeTerritory?.locked) {
+      setStatusMessage("Территория уже импортирована. Для изменения сначала разблокируйте её.");
+      return;
+    }
+
+    if (typeof window !== "undefined" && !window.confirm("После успешного импорта изменить границы территории будет нельзя без удаления импортированных данных.")) {
+      return;
+    }
+
     setIsImporting(true);
     setStatusMessage("");
     setImportLog([]);
+    const importStartedAt = new Date().toISOString();
+    const importRevision = {
+      bounds: importBounds,
+      startedAt: importStartedAt,
+    };
+    setTerritoryStatus("importing", activeTerritory?.id, importRevision);
 
     try {
+      const areaSquareKilometers = getBoundingBoxAreaSquareKilometers(importBounds);
+      if (areaSquareKilometers > CHUNKED_IMPORT_AREA_THRESHOLD_SQUARE_KILOMETERS) {
+        await importTerritoryInChunks({
+          projectId: project.id,
+          bounds: importBounds,
+          sources: enabledSources,
+          onProjectUpdate: async (fusionResult) => {
+            syncProjectFromFusion(fusionResult);
+            // Chunked layers are rendered from IndexedDB, while analysis reads
+            // the project model. Persist the fused model before navigation so
+            // /analysis and a reload see the same imported data.
+            await saveProject();
+          },
+        });
+        setTerritoryStatus("imported", activeTerritory?.id, {
+          ...importRevision,
+          completedAt: new Date().toISOString(),
+        });
+        setStatusMessage(text.done);
+        return;
+      }
+
       await importUnifiedContextByBoundingBox(importBounds, {
         sources: enabledSources,
         onProgress: (event) => setImportLog((current) => mergeImportLog(current, event)),
-        onProjectUpdate: syncProjectFromFusion,
+        onProjectUpdate: async (fusionResult) => {
+          syncProjectFromFusion(fusionResult);
+          await saveProject();
+        },
       });
 
+      setTerritoryStatus("imported", activeTerritory?.id, {
+        ...importRevision,
+        completedAt: new Date().toISOString(),
+      });
       setStatusMessage(text.done);
     } catch (error) {
+      setTerritoryStatus("failed", activeTerritory?.id, {
+        ...importRevision,
+        failedAt: new Date().toISOString(),
+      });
       setStatusMessage(error instanceof Error ? error.message : text.importFailed);
     } finally {
       setIsImporting(false);
@@ -117,11 +192,11 @@ export default function TopBar() {
           type="button"
           data-testid="single-import-button"
           onClick={handleImport}
-          disabled={isImporting}
+          disabled={isImporting && !isChunkImportActive}
           className="inline-flex h-11 items-center gap-2 whitespace-nowrap rounded-[14px] bg-[#229ED9] px-4 text-sm font-semibold text-white transition duration-200 ease-out hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-55"
         >
           <Icon name="download" />
-          {isImporting ? text.importing : text.importTerritory}
+          {isChunkImportActive ? text.cancelImport : isImporting ? text.importing : text.importTerritory}
         </button>
         <button
           type="button"
@@ -134,11 +209,13 @@ export default function TopBar() {
         </button>
 
         {isSourcesPanelOpen ? <DataSourcesPanel /> : null}
-        {isImporting || importLog.length > 0 || statusMessage ? (
+        {isImporting || isChunkImportActive || chunkPhase === "completed" || importLog.length > 0 || visibleStatusMessage ? (
           <ImportProgressPopover
-            progressPercent={progressPercent}
+            progressPercent={visibleProgressPercent}
             events={importLog}
-            statusMessage={statusMessage}
+            statusMessage={visibleStatusMessage}
+            chunkPhase={chunkPhase}
+            chunkProgress={chunkProgress}
           />
         ) : null}
       </div>
@@ -150,10 +227,14 @@ function ImportProgressPopover({
   progressPercent,
   events,
   statusMessage,
+  chunkPhase,
+  chunkProgress,
 }: {
   progressPercent: number;
   events: ImportProgressEvent[];
   statusMessage: string;
+  chunkPhase: ReturnType<typeof useImportStore.getState>["phase"];
+  chunkProgress: ReturnType<typeof useImportStore.getState>["progress"];
 }) {
   return (
     <aside
@@ -165,6 +246,15 @@ function ImportProgressPopover({
       </div>
 
       {statusMessage ? <p className="mt-3 font-semibold text-[#0F172A]">{statusMessage}</p> : null}
+
+      {chunkPhase !== "idle" ? (
+        <div className="mt-3 grid grid-cols-2 gap-2 text-[12px] text-[#64748B]">
+          <span>Ячейки: {chunkProgress.completedCells}/{chunkProgress.totalCells}</span>
+          <span>Загрузка: {chunkProgress.downloadedSources}/{chunkProgress.totalSourceRequests}</span>
+          <span>Сохранено: {chunkProgress.persistedChunks}</span>
+          <span>Отрисовано: {chunkProgress.renderedChunks}/{chunkProgress.totalChunks}</span>
+        </div>
+      ) : null}
 
       <div className="mt-3 max-h-56 space-y-2 overflow-y-auto">
         {events.map((event) => (
@@ -182,6 +272,28 @@ function ImportProgressPopover({
       </div>
     </aside>
   );
+}
+
+function isActiveChunkImportPhase(phase: ReturnType<typeof useImportStore.getState>["phase"]): boolean {
+  return phase === "downloading" || phase === "processing" || phase === "persisting" || phase === "rendering";
+}
+
+function getChunkStatusMessage(
+  phase: ReturnType<typeof useImportStore.getState>["phase"],
+  errors: string[]
+): string {
+  const labels: Partial<Record<ReturnType<typeof useImportStore.getState>["phase"], string>> = {
+    downloading: "Загрузка ячеек территории...",
+    processing: "Обработка геометрии в фоне...",
+    persisting: "Сохранение чанков...",
+    rendering: "Постепенная отрисовка слоёв...",
+    completed: errors.length > 0
+      ? "Импорт завершен частично: отдельные источники временно недоступны."
+      : "Импорт завершен, карта интерактивна.",
+    cancelled: "Импорт отменён.",
+    error: errors.at(-1) ?? text.importFailed,
+  };
+  return labels[phase] ?? "";
 }
 
 type IconName = "bell" | "chevron" | "database" | "download" | "help" | "search" | "settings";

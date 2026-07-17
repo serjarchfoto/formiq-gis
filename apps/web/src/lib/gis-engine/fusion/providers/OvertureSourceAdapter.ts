@@ -4,7 +4,13 @@ import { GeoJsonProxySourceAdapter, normalizeGeneralGeoJsonFeature } from "./Geo
 
 export class OvertureSourceAdapter extends GeoJsonProxySourceAdapter {
   constructor() {
-    super("overture", "/api/data/overture", process.env.NEXT_PUBLIC_OVERTURE_API_URL);
+    super(
+      "overture",
+      "/api/data/overture",
+      process.env.NEXT_PUBLIC_OVERTURE_API_URL,
+      "general",
+      "overture"
+    );
   }
 
   protected normalizeFeature(feature: Feature<Geometry, GeoJsonProperties>, index: number): SourceFeature[] {

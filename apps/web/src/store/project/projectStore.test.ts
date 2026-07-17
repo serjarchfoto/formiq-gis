@@ -8,6 +8,7 @@ describe("projectStore", () => {
       projects: [],
       isHydrated: false,
       isSaving: false,
+      isDirty: false,
       lastSavedAt: null,
     });
   });
@@ -44,8 +45,36 @@ describe("projectStore", () => {
     expect(project.vegetation).toEqual([]);
     expect(project.water).toEqual([]);
     expect(project.terrain).toEqual([]);
+    expect(project.importSettings.includeTerrain).toBe(false);
+    expect(project.importSettings.sources["copernicus-dem"]).toBe(false);
     expect(useProjectStore.getState().activeProjectId).toBe(project.id);
     expect(useProjectStore.getState().getProjects()).toHaveLength(1);
+    expect(useProjectStore.getState().isDirty).toBe(false);
+  });
+
+  it("autosaves only after a real project mutation", async () => {
+    await useProjectStore.getState().createProject({ name: "Dirty state" });
+    await Promise.resolve();
+
+    expect(useProjectStore.getState().isDirty).toBe(false);
+
+    useProjectStore.getState().updateProject((project) => ({
+      ...project,
+      description: "Changed",
+    }));
+
+    expect(useProjectStore.getState().isDirty).toBe(true);
+    await useProjectStore.getState().saveProject();
+    expect(useProjectStore.getState().isDirty).toBe(false);
+  });
+
+  it("loads terrain only after the user explicitly enables it", async () => {
+    await useProjectStore.getState().createProject({ name: "Terrain on demand" });
+
+    useProjectStore.getState().setImportSourceEnabled("copernicus-dem", true);
+
+    expect(useProjectStore.getState().project.importSettings.includeTerrain).toBe(true);
+    expect(useProjectStore.getState().project.importSettings.sources["copernicus-dem"]).toBe(true);
   });
 
   it("updates a project name and modified date", async () => {

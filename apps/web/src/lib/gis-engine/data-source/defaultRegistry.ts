@@ -1,4 +1,5 @@
 import type { ImportSourceId } from "@/types/formiq";
+import type { SourceAdapter } from "@/lib/gis-engine/fusion/types";
 import { CityGeoJsonSourceAdapter } from "@/lib/gis-engine/fusion/providers/CityGeoJsonSourceAdapter";
 import { CopernicusDemSourceAdapter } from "@/lib/gis-engine/fusion/providers/CopernicusDemSourceAdapter";
 import { LocalBuildingsSourceAdapter } from "@/lib/gis-engine/fusion/providers/LocalBuildingsSourceAdapter";
@@ -33,32 +34,11 @@ export function createDefaultSourceRegistry(sources: ImportSourceId[]): SourceRe
 }
 
 export function createDefaultDataSource(source: ImportSourceId) {
-  if (source === "osm") {
-    return new SourceAdapterDataSource(new OSMSourceAdapter(), DATA_SOURCE_LABELS[source], "online");
-  }
-
-  if (source === "microsoft-buildings") {
-    return new SourceAdapterDataSource(new MicrosoftBuildingSourceAdapter(), DATA_SOURCE_LABELS[source], "offline");
-  }
-
-  if (source === "overture") {
-    return new SourceAdapterDataSource(new OvertureSourceAdapter(), DATA_SOURCE_LABELS[source], "offline");
-  }
-
-  if (source === "city-geojson") {
-    return new SourceAdapterDataSource(new CityGeoJsonSourceAdapter(), DATA_SOURCE_LABELS[source], "offline");
-  }
-
-  if (source === "local-buildings") {
-    return new SourceAdapterDataSource(new LocalBuildingsSourceAdapter(), DATA_SOURCE_LABELS[source], "offline");
-  }
-
-  if (source === "wikidata") {
-    return new SourceAdapterDataSource(new WikidataSourceAdapter(), DATA_SOURCE_LABELS[source], "online");
-  }
+  const adapter = createDefaultSourceAdapter(source);
+  if (!adapter) return new UnavailableDataSource(source, DATA_SOURCE_LABELS[source]);
 
   if (source === "copernicus-dem") {
-    return new SourceAdapterDataSource(new CopernicusDemSourceAdapter(), DATA_SOURCE_LABELS[source], "online", {
+    return new SourceAdapterDataSource(adapter, DATA_SOURCE_LABELS[source], "online", {
       supportsTiles: true,
       cache: {
         ttlMs: 60 * 60 * 1000,
@@ -66,5 +46,17 @@ export function createDefaultDataSource(source: ImportSourceId) {
     });
   }
 
-  return new UnavailableDataSource(source, DATA_SOURCE_LABELS[source]);
+  const mode = source === "osm" || source === "wikidata" ? "online" : "offline";
+  return new SourceAdapterDataSource(adapter, DATA_SOURCE_LABELS[source], mode);
+}
+
+export function createDefaultSourceAdapter(source: ImportSourceId): SourceAdapter | null {
+  if (source === "osm") return new OSMSourceAdapter();
+  if (source === "microsoft-buildings") return new MicrosoftBuildingSourceAdapter();
+  if (source === "overture") return new OvertureSourceAdapter();
+  if (source === "city-geojson") return new CityGeoJsonSourceAdapter();
+  if (source === "local-buildings") return new LocalBuildingsSourceAdapter();
+  if (source === "wikidata") return new WikidataSourceAdapter();
+  if (source === "copernicus-dem") return new CopernicusDemSourceAdapter();
+  return null;
 }

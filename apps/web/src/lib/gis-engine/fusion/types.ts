@@ -1,4 +1,4 @@
-import type { FeatureCollection, Geometry, GeoJsonProperties } from "geojson";
+import type { Feature, FeatureCollection, Geometry, GeoJsonProperties } from "geojson";
 import type { BoundingBox, GISLayer } from "@/types/gis";
 import type {
   DataSourceKind,
@@ -95,14 +95,44 @@ export interface SourceAdapterResult {
   metadata?: Record<string, string | number | boolean>;
 }
 
+export type SourceAdapterWorkerPayload =
+  | {
+      format: "source-features";
+      features: SourceFeature[];
+    }
+  | {
+      format: "overpass";
+      responses: import("@/services/overpass").OverpassResponse[];
+    }
+  | {
+      format: "geojson";
+      features: Array<Feature<Geometry, GeoJsonProperties>>;
+      normalization: "building" | "general";
+      fallbackPrefix: string;
+    }
+  | {
+      format: "terrain";
+      features: Array<Feature<Extract<Geometry, { type: "Point" }>, { elevation?: unknown }>>;
+      demType: string;
+    };
+
+export interface SourceAdapterRawResult {
+  source: DataSourceKind;
+  version: string;
+  payload: SourceAdapterWorkerPayload;
+  metadata?: Record<string, string | number | boolean>;
+}
+
 export interface SourceAdapterContext {
   bounds: BoundingBox;
+  signal?: AbortSignal;
 }
 
 export interface SourceAdapter {
   source: DataSourceKind;
   version: string;
   fetch(context: SourceAdapterContext): Promise<SourceAdapterResult>;
+  fetchRaw?(context: SourceAdapterContext): Promise<SourceAdapterRawResult>;
 }
 
 export interface SourceCacheEntry {

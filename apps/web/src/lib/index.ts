@@ -19,4 +19,5 @@ export * from "./gis-engine/scene-3d";
 export * from "./gis-engine/professional-tools";
 export * from "./gis-engine/visualization-3d";
 export * from "./gis-engine/export";
+export * from "./gis-engine/chunks";
 export * from "./storage";

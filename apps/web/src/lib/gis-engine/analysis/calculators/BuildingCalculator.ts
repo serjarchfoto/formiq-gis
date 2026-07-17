@@ -48,6 +48,13 @@ export class BuildingCalculator implements AnalysisCalculator<"buildings"> {
       (total, building) => total + building.area * (building.levels ?? 1),
       0
     );
+    const knownAge = project.buildings.filter((building) => building.year != null).length;
+    const knownFunction = project.buildings.filter((building) => building.usage !== "unknown").length;
+    const knownFloor = project.buildings.filter((building) => building.levels != null || building.height != null).length;
+    const residentialArea = project.buildings
+      .filter((building) => building.usage === "residential")
+      .reduce((total, building) => total + building.area * (building.levels ?? 1), 0);
+    const estimatedPopulation = residentialArea * 0.035;
 
     return {
       count: project.buildings.length,
@@ -64,6 +71,16 @@ export class BuildingCalculator implements AnalysisCalculator<"buildings"> {
       floorTheme: [] satisfies ThematicRenderItem[],
       ageTheme: [] satisfies ThematicRenderItem[],
       functionTheme: [] satisfies ThematicRenderItem[],
+      ageCoveragePercent: project.buildings.length ? (knownAge / project.buildings.length) * 100 : 0,
+      functionCoveragePercent: project.buildings.length ? (knownFunction / project.buildings.length) * 100 : 0,
+      floorCoveragePercent: project.buildings.length ? (knownFloor / project.buildings.length) * 100 : 0,
+      estimatedPopulation,
+      populationCoveragePercent: residentialArea > 0 ? 100 : 0,
+      dataNotes: [
+        knownAge < project.buildings.length ? "Возраст: часть годов постройки отсутствует в исходных данных." : "Возраст: годы постройки получены из источников.",
+        knownFunction < project.buildings.length ? "Функции: неизвестные объекты сохранены как unknown." : "Функции: классификация заполнена.",
+        residentialArea > 0 ? "Население: оценка по жилой площади и этажности, без официальной статистики." : "Население: нет жилых зданий для расчётной оценки.",
+      ],
     };
   }
 }

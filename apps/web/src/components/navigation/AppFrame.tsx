@@ -41,7 +41,6 @@ export default function AppFrame({ children }: { children: ReactNode }) {
 function GlobalNavigation() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const project = useProjectStore((state) => state.project);
   const setWorkspaceMode = useProjectStore((state) => state.setWorkspaceMode);
   const activeStage = getActiveStage(pathname, searchParams.get("mode"));
   const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
@@ -57,7 +56,7 @@ function GlobalNavigation() {
   }, []);
 
   return (
-    <header style={{ padding: "0 24px" }} className="relative z-50 flex h-[72px] shrink-0 items-center justify-between border-b border-white/60 bg-white/58 backdrop-blur-3xl max-md:px-3">
+    <header style={{ padding: "0 18px" }} className="relative z-50 flex h-[68px] shrink-0 items-center justify-between border-b border-white/60 bg-white/64 backdrop-blur-3xl max-md:px-3">
       <div style={{ gap: 48 }} className="flex min-w-0 items-center">
         <Link href="/" className="flex min-w-0 items-center gap-3" aria-label="FORMIQ">
           <span className="grid h-10 w-10 shrink-0 place-items-center rounded-[12px] border border-[#229ED9]/25 bg-[#229ED9]/10 text-lg font-black text-[#229ED9]">
@@ -76,12 +75,12 @@ function GlobalNavigation() {
               onClick={() => item.mode && setWorkspaceMode(item.mode)}
               style={{ paddingInline: 12 }}
               className={`relative flex h-10 shrink-0 items-center rounded-[12px] text-sm transition duration-200 ease-out hover:bg-white/45 ${
-                activeStage === item.id ? "font-semibold text-[#0F172A]" : "font-medium text-[#475569]"
+                activeStage === item.id ? "bg-[#229ED9]/6 font-semibold text-[#229ED9]" : "font-medium text-[#475569]"
               }`}
             >
               <span>{item.label}</span>
               {activeStage === item.id ? (
-                <span className="absolute inset-x-3 -bottom-[11px] h-0.5 bg-[#229ED9]" />
+                <span className="absolute inset-x-4 bottom-0.5 h-0.5 rounded-full bg-[#229ED9]" />
               ) : null}
             </Link>
           ))}
@@ -107,12 +106,6 @@ function GlobalNavigation() {
       ) : null}
 
       <div className="flex min-w-0 items-center gap-2">
-        <div className="hidden min-w-0 items-center gap-3 lg:flex">
-          <span className="max-w-44 truncate text-[13px] font-medium text-[#64748B]">{project.name}</span>
-          <span className="rounded-full border border-white/70 bg-white/55 px-3 py-1.5 text-[12px] font-semibold text-[#64748B]">
-            {getStageHint(activeStage)}
-          </span>
-        </div>
         <HeaderIconButton label="Справка" icon="help" />
         <HeaderIconButton label="Уведомления" icon="bell" />
         <HeaderIconButton label="Настройки" icon="settings" />
@@ -132,8 +125,8 @@ function GlobalNavigation() {
           </button>
           {isAccountMenuOpen ? (
             <div role="menu" aria-label="Меню аккаунта" className="absolute right-0 top-12 z-50 w-48 rounded-[16px] border border-white/70 bg-white/82 p-2 backdrop-blur-3xl">
-              <button type="button" role="menuitem" className="flex h-10 w-full items-center rounded-[12px] px-3 text-left text-[13px] font-medium hover:bg-white/55">Профиль</button>
-              <button type="button" role="menuitem" className="flex h-10 w-full items-center rounded-[12px] px-3 text-left text-[13px] font-medium hover:bg-white/55">Настройки аккаунта</button>
+              <button type="button" role="menuitem" disabled title="Скоро" className="flex h-10 w-full items-center rounded-[12px] px-3 text-left text-[13px] font-medium text-[#94A3B8] disabled:cursor-not-allowed">Профиль</button>
+              <button type="button" role="menuitem" disabled title="Скоро" className="flex h-10 w-full items-center rounded-[12px] px-3 text-left text-[13px] font-medium text-[#94A3B8] disabled:cursor-not-allowed">Настройки аккаунта</button>
             </div>
           ) : null}
         </div>
@@ -158,7 +151,8 @@ function HeaderIconButton({ icon, label }: { icon: HeaderIconName; label: string
       type="button"
       aria-label={label}
       title={label}
-      className="grid h-10 w-10 place-items-center rounded-[12px] border border-white/70 bg-white/62 text-[#64748B] backdrop-blur-3xl transition duration-200 ease-out hover:-translate-y-0.5 hover:bg-white/78 hover:text-[#0F172A]"
+      disabled
+      className="grid h-10 w-10 place-items-center rounded-[12px] border border-white/70 bg-white/62 text-[#94A3B8] backdrop-blur-3xl transition duration-200 ease-out disabled:cursor-not-allowed"
     >
       <HeaderIcon icon={icon} />
     </button>
@@ -199,17 +193,19 @@ function WorkflowPrompt() {
   };
 
   return (
-    <aside className="absolute right-6 top-6 z-40 w-[360px] rounded-[20px] border border-white/70 bg-white/72 p-4 backdrop-blur-3xl max-md:left-4 max-md:right-4 max-md:top-4 max-md:w-auto">
+    <aside className="absolute right-4 top-4 z-40 w-[292px] rounded-[20px] border border-white/70 bg-white/76 p-4 backdrop-blur-3xl max-md:left-4 max-md:right-4 max-md:top-4 max-md:w-auto">
       <p className="text-sm font-semibold text-[#0F172A]">{prompt.title}</p>
       <p className="mt-1 text-[13px] leading-5 text-[#64748B]">{prompt.body}</p>
       <div className="mt-4 flex justify-end gap-2">
-        <button
-          type="button"
-          onClick={() => dismiss(prompt.id)}
-          className="h-10 rounded-[14px] border border-white/70 bg-white/55 px-4 text-[13px] font-semibold transition duration-200 ease-out hover:-translate-y-0.5"
-        >
-          {prompt.stayLabel}
-        </button>
+        {prompt.id !== "analysisToPresentation" ? (
+          <button
+            type="button"
+            onClick={() => dismiss(prompt.id)}
+            className="h-10 rounded-[14px] border border-white/70 bg-white/55 px-4 text-[13px] font-semibold transition duration-200 ease-out hover:-translate-y-0.5"
+          >
+            {prompt.stayLabel}
+          </button>
+        ) : null}
         <button
           type="button"
           onClick={goNext}
@@ -256,14 +252,6 @@ function getActiveStage(pathname: string, mode: string | null): WorkflowStage {
   return "projects";
 }
 
-function getStageHint(stage: WorkflowStage): string {
-  if (stage === "projects") return "Управление проектами";
-  if (stage === "architecture") return "GIS и данные";
-  if (stage === "analysis") return "Показатели и сценарии";
-  if (stage === "presentation") return "Лист и легенда";
-  return "Презентационный режим";
-}
-
 function getWorkflowReadiness(project: FormiqProjectData) {
   const hasTerritory = Boolean(project.activeTerritoryId && project.territories.length);
   const hasMap = Array.isArray(project.settings.display.mapCenter) && Number.isFinite(project.settings.display.mapZoom);
@@ -275,7 +263,8 @@ function getWorkflowReadiness(project: FormiqProjectData) {
     project.boundaries.length +
     project.poi.length +
     project.transitStops.length;
-  const hasImportedData = importedEntityCount > 0 || project.dataSources.some((source) => source.status === "active");
+  const layerEntityCount = project.layers.reduce((total, layer) => total + (layer.metadata.featureCount ?? 0), 0);
+  const hasImportedData = importedEntityCount > 0 || layerEntityCount > 0 || (project.fusion?.statistics.fusedFeatureCount ?? 0) > 0 || project.dataSources.some((source) => source.status === "active");
   const hasThematicMaps =
     Object.values(project.thematicMaps).some(isThematicMapDefinition) ||
     project.settings.display.activeThematicMapType !== "none";

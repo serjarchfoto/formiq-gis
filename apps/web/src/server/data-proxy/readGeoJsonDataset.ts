@@ -1,4 +1,5 @@
 import { access, readFile, readdir, stat } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import type { Feature, FeatureCollection, GeoJsonProperties, Geometry, Position } from "geojson";
 
@@ -179,7 +180,14 @@ export function resolveDatasetPath(envValue: string | undefined, fallbackFromWeb
     return path.resolve(/* turbopackIgnore: true */ envValue);
   }
 
-  return path.join(/* turbopackIgnore: true */ process.cwd(), fallbackFromWebRoot);
+  const candidates = [
+    path.join(/* turbopackIgnore: true */ process.cwd(), fallbackFromWebRoot),
+    path.join(/* turbopackIgnore: true */ process.cwd(), "dist", fallbackFromWebRoot),
+    path.join(/* turbopackIgnore: true */ process.cwd(), "..", "dist", fallbackFromWebRoot),
+    path.join(/* turbopackIgnore: true */ process.cwd(), "..", "..", "dist", fallbackFromWebRoot),
+  ];
+
+  return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0];
 }
 
 export function isSupportedGeoJsonPath(filePath: string): boolean {

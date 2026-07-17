@@ -1,5 +1,10 @@
 import type { Point } from "geojson";
-import type { SourceAdapter, SourceAdapterResult, SourceTerrainFeature } from "@/lib/gis-engine/fusion/types";
+import type {
+  SourceAdapter,
+  SourceAdapterRawResult,
+  SourceAdapterResult,
+  SourceTerrainFeature,
+} from "@/lib/gis-engine/fusion/types";
 import { TerrainService } from "@/services/terrain";
 
 export class CopernicusDemSourceAdapter implements SourceAdapter {
@@ -8,8 +13,8 @@ export class CopernicusDemSourceAdapter implements SourceAdapter {
 
   constructor(private readonly service = new TerrainService()) {}
 
-  async fetch({ bounds }: Parameters<SourceAdapter["fetch"]>[0]): Promise<SourceAdapterResult> {
-    const dataset = await this.service.loadDEM(bounds);
+  async fetch({ bounds, signal }: Parameters<SourceAdapter["fetch"]>[0]): Promise<SourceAdapterResult> {
+    const dataset = await this.service.loadDEM(bounds, signal);
 
     return {
       source: this.source,
@@ -17,6 +22,7 @@ export class CopernicusDemSourceAdapter implements SourceAdapter {
       metadata: {
         status: dataset.status,
         message: dataset.message,
+        sourceId: dataset.source,
         demType: dataset.demType,
         gridSize: dataset.gridSize,
         sampledAt: dataset.sampledAt,
@@ -32,10 +38,26 @@ export class CopernicusDemSourceAdapter implements SourceAdapter {
         elevation: point.elevation,
         slope: null,
         tags: {
-          source: "open-topography",
+          source: dataset.source,
           demType: dataset.demType,
         },
       })),
+    };
+  }
+
+  async fetchRaw({ bounds, signal }: Parameters<SourceAdapter["fetch"]>[0]): Promise<SourceAdapterRawResult> {
+    const payload = await this.service.loadRawDEM(bounds, signal);
+    const demType = payload.metadata?.demType ?? "COP30";
+    return {
+      source: this.source,
+      version: this.version,
+      payload: { format: "terrain", features: payload.features, demType },
+      metadata: {
+        status: payload.metadata?.status ?? "ready",
+        message: payload.metadata?.message ?? "",
+        demType,
+        featureCount: payload.features.length,
+      },
     };
   }
 }

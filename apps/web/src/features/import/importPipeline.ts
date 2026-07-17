@@ -3,7 +3,8 @@ import {
   DataFusionEngine,
   DataSourceEngine,
   DEFAULT_IMPORT_SOURCE_ORDER,
-  isImportSourceEnabledByDefault,
+  DEFAULT_IMPORT_SOURCE_SETTINGS,
+  isImportSourceSupported,
   SourceHealthMonitor,
   SourceManager,
 } from "@/lib";
@@ -68,6 +69,9 @@ const buildingSources = new Set<ImportSourceId>(["osm", "microsoft-buildings", "
 const roadSources = new Set<ImportSourceId>(["osm", "city-geojson"]);
 const poiSources = new Set<ImportSourceId>(["wikidata", "osm", "city-geojson"]);
 const terrainSources = new Set<ImportSourceId>(["copernicus-dem"]);
+export const MAX_INTERACTIVE_IMPORT_AREA_SQUARE_KILOMETERS = 50;
+export const MAX_INTERACTIVE_IMPORT_FEATURES_PER_SOURCE = 25_000;
+export const MAX_INTERACTIVE_IMPORT_FEATURES_TOTAL = 40_000;
 
 export class ImportPipeline {
   async run(bounds: BoundingBox, options: UnifiedImportOptions = {}): Promise<UnifiedImportResult> {
@@ -111,6 +115,9 @@ export class ImportPipeline {
     this.emitImportStageStart(options, "import-terrain", sources, terrainSources, activeStages);
 
     const fusionResult = await fusionEngine.fuse(bounds, {
+      maxFeaturesPerSource: MAX_INTERACTIVE_IMPORT_FEATURES_PER_SOURCE,
+      maxFeaturesTotal: MAX_INTERACTIVE_IMPORT_FEATURES_TOTAL,
+      priorityRoles: ["buildings", "functions", "poi", "transport", "terrain"],
       onSourceComplete: (event) => {
         const source = event.source as ImportSourceId;
 
@@ -155,7 +162,11 @@ export class ImportPipeline {
   }
 
   private resolveSources(sources?: ImportSourceId[]): ImportSourceId[] {
-    return (sources?.length ? sources : DEFAULT_IMPORT_SOURCE_ORDER).filter(isImportSourceEnabledByDefault);
+    const requestedSources = sources?.length
+      ? sources
+      : DEFAULT_IMPORT_SOURCE_ORDER.filter((source) => DEFAULT_IMPORT_SOURCE_SETTINGS[source]);
+
+    return requestedSources.filter(isImportSourceSupported);
   }
 
   private emitImportStageStart(
@@ -212,7 +223,10 @@ export class ImportPipeline {
 }
 
 export function getImportStageCount(sources: ImportSourceId[]): number {
-  const resolved = (sources.length ? sources : DEFAULT_IMPORT_SOURCE_ORDER).filter(isImportSourceEnabledByDefault);
+  const requestedSources = sources.length
+    ? sources
+    : DEFAULT_IMPORT_SOURCE_ORDER.filter((source) => DEFAULT_IMPORT_SOURCE_SETTINGS[source]);
+  const resolved = requestedSources.filter(isImportSourceSupported);
   const optionalStages = [
     resolved.some((source) => buildingSources.has(source)),
     resolved.some((source) => roadSources.has(source)),
@@ -234,6 +248,23 @@ function validateImportBounds(bounds: BoundingBox): void {
   ) {
     throw new Error("Выбранная территория некорректна.");
   }
+
+  const areaSquareKilometers = getBoundingBoxAreaSquareKilometers(bounds);
+  if (areaSquareKilometers > MAX_INTERACTIVE_IMPORT_AREA_SQUARE_KILOMETERS) {
+    throw new Error(
+      `Территория слишком большая: ${areaSquareKilometers.toFixed(1)} км². ` +
+        `Для стабильной работы выберите участок до ${MAX_INTERACTIVE_IMPORT_AREA_SQUARE_KILOMETERS} км² или разделите его на несколько территорий.`
+    );
+  }
+}
+
+export function getBoundingBoxAreaSquareKilometers(bounds: BoundingBox): number {
+  const middleLatitudeRadians = (((bounds.south + bounds.north) / 2) * Math.PI) / 180;
+  const widthKilometers =
+    Math.abs(bounds.east - bounds.west) * 111.32 * Math.cos(middleLatitudeRadians);
+  const heightKilometers = Math.abs(bounds.north - bounds.south) * 111.32;
+
+  return widthKilometers * heightKilometers;
 }
 
 function getStageMessage(stage: ImportPipelineStageId, status: SourceSyncState["status"], featureCount: number): string {
