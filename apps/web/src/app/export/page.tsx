@@ -577,11 +577,8 @@ function buildSheetPreview(project: FormiqProjectData, analysisProject: FormiqPr
   const { width, height, margin, mapBox } = getSheetLayout(paper, settings.marginsMm);
   const mapLayers = createTerritoryMap(project, mapBox, thematicMap, preset, audit, requirement);
   const grid = settings.showGrid ? createGrid(width, height, margin, settings.gridStepMm, paper.width) : "";
-  // Keep the cartographic furniture in the same reading order as the
-  // reference sheets: legend in the upper-right map corner and north arrow
-  // at the upper-left edge of the drawing, below the title block.
-  const legend = settings.showLegend ? createPresentationLegend(width - margin - 200, margin + 112, preset, project, audit) : "";
-  const north = settings.showNorthArrow ? createNorthArrow(margin + 20, margin + 94) : "";
+  const legend = settings.showLegend ? createPresentationLegend(width - margin - 200, margin + 250, preset, project, audit) : "";
+  const north = settings.showNorthArrow ? createNorthArrow(width - margin - 70, margin + 48) : "";
   const scale = settings.showScaleBar ? createScaleBar(margin + 40, height - margin - 88, settings.scale, paper.width, width) : "";
   const frame = settings.showFrame ? `<rect x="${margin}" y="${margin}" width="${width - margin * 2}" height="${height - margin * 2}" fill="none" stroke="#0F172A" stroke-width="1.2"/>` : "";
   const labels = settings.showInfoBlock ? createTitleBlock(width - margin - 320, height - margin - 176, settings, analysisProject) : "";
