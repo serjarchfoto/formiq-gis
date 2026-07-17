@@ -38,7 +38,8 @@ export function createRectangleCoordinates(start: Position, end: Position): Posi
 
 export function createSelectionFeatureCollection(
   selection: TerritorySelection | null,
-  draftCoordinates: Position[]
+  draftCoordinates: Position[],
+  options?: { editable?: boolean }
 ): FeatureCollection<Geometry> {
   const features: Feature<Geometry>[] = [];
 
@@ -51,7 +52,9 @@ export function createSelectionFeatureCollection(
         featureType: "selection",
       },
     });
-    features.push(...createSelectionHandleFeatures(selection));
+    if (options?.editable !== false) {
+      features.push(...createSelectionHandleFeatures(selection));
+    }
   }
 
   if (draftCoordinates.length === 1) {
@@ -92,6 +95,21 @@ export function createSelectionFeatureCollection(
     type: "FeatureCollection",
     features,
   };
+}
+
+/**
+ * Selection features are small and edited on every pointer event. Unlike the
+ * large GIS sources, their render key must include geometry so MapLibre gets a
+ * new `setData` call for every cursor/vertex movement.
+ */
+export function createSelectionSourceHash(data: FeatureCollection<Geometry, GeoJsonProperties>): string {
+  return JSON.stringify(
+    data.features.map((feature) => ({
+      id: feature.id ?? null,
+      properties: feature.properties ?? null,
+      geometry: feature.geometry,
+    }))
+  );
 }
 
 export function createTerritorySelection(

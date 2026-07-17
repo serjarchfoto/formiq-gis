@@ -6,10 +6,13 @@ import maplibregl, {
   type Map as MapLibreMap,
   type MapMouseEvent,
 } from "maplibre-gl";
+import { DEFAULT_OSM_LAYER_STYLES } from "@/constants/gis";
+import { prepareThematicGeoJsonForRendering } from "@/lib/gis-engine/thematic/renderGeometry";
 import type { FeatureCollection, GeoJsonProperties, Geometry, Position } from "geojson";
 import {
   createRectangleCoordinates,
   createSelectionFeatureCollection,
+  createSelectionSourceHash,
   getRectangleRotationAngle,
   rotateRectangleCoordinates,
   resizeRectangleCoordinates,
@@ -22,12 +25,15 @@ import {
   formiqLayerDataToFeatureCollection,
   getCachedAnalysisTimestamp,
   isThematicMapDefinition,
+  layerChunkStorage,
   ThreeDThematicMapEngine,
+  type LayerChunkManifest,
   type ThreeDRenderableMap,
   type ThematicMapDefinition,
   type ThematicMapType,
 } from "@/lib";
 import { useLayers } from "@/store/layers";
+import { useImportStore } from "@/store/import";
 import { useMapStore, type SelectedMapObject } from "@/store/map";
 import { useProjectStore } from "@/store/project";
 import { useSelectionStore } from "@/store/selection";
@@ -49,6 +55,8 @@ const SELECTION_SOURCE_ID = "formiq-selection";
 const SELECTION_FILL_LAYER_ID = "formiq-selection-fill";
 const SELECTION_LINE_LAYER_ID = "formiq-selection-line";
 const SELECTION_POINT_LAYER_ID = "formiq-selection-point";
+const SELECTION_MASK_SOURCE_ID = "formiq-selection-mask";
+const SELECTION_MASK_LAYER_ID = "formiq-selection-mask";
 const THEMATIC_SOURCE_ID = "thematic";
 const THEMATIC_FILL_LAYER_ID = "thematic-fill";
 const THEMATIC_LINE_LAYER_ID = "thematic-line";
@@ -71,6 +79,7 @@ const THREE_D_ROUTES_LAYER_ID = "formiq-3d-routes";
 const THREE_D_POI_LAYER_ID = "formiq-3d-poi";
 const THREE_D_TERRAIN_LAYER_ID = "formiq-3d-terrain";
 const THREE_D_TERRITORY_BOUNDARY_LAYER_ID = "formiq-3d-territory-boundary";
+const MAX_INTERACTIVE_MAP_FEATURES = 40_000;
 const cartographicStyleEngine = new CartographicStyleEngine();
 const threeDThematicMapEngine = new ThreeDThematicMapEngine();
 
@@ -86,6 +95,7 @@ interface MapProps {
   workspaceModeOverride?: ProjectWorkspaceMode;
   thematicMapTypeOverride?: ThematicMapType;
   thematicMapOverride?: ThematicMapDefinition | null;
+  analysisLayerOpacityOverride?: number;
   showNavigationControls?: boolean;
 }
 
@@ -93,37 +103,56 @@ export default function Map({
   workspaceModeOverride,
   thematicMapTypeOverride,
   thematicMapOverride,
+  analysisLayerOpacityOverride,
   showNavigationControls = true,
 }: MapProps = {}) {
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const rectangleStartRef = useRef<Position | null>(null);
   const renderedLayerIdsRef = useRef<Set<string>>(new Set());
+  const renderedChunkLayerIdsRef = useRef<globalThis.Map<string, string>>(new globalThis.Map());
   const thematicLayerTypeRef = useRef<string>("none");
   const sourceDataHashesRef = useRef<globalThis.Map<string, string>>(new globalThis.Map());
   const pmTilesManagerRef = useRef(new PMTilesViewportTileManager());
   const isMapStyleReadyRef = useRef(false);
   const selectionDragRef = useRef<SelectionDragState | null>(null);
   const layers = useLayers((state) => state.layers);
+  const chunkProjectId = useImportStore((state) => state.projectId);
+  const chunkManifests = useImportStore((state) => state.manifests);
+  const interactiveFeatureCount = useMemo(
+    () => layers.reduce((total, layer) => total + getLayerFeatureCount(layer), 0),
+    [layers]
+  );
+  const isInteractiveDatasetTooLarge = interactiveFeatureCount > MAX_INTERACTIVE_MAP_FEATURES;
   const pmTilesSources = useMapStore((state) => state.pmTilesSources);
   const project = useProjectStore((state) => state.project);
+  const activeTerritory = useMemo(
+    () => project.territories.find((territory) => territory.id === project.activeTerritoryId) ?? null,
+    [project.activeTerritoryId, project.territories]
+  );
   const displaySettings = project.settings.display;
   const workspaceMode = workspaceModeOverride ?? displaySettings.workspaceMode;
   const thematicMapType = thematicMapTypeOverride ?? displaySettings.activeThematicMapType;
+  const analysisLayerOpacity = analysisLayerOpacityOverride ?? displaySettings.analysisLayerOpacity;
   const thematicMap = useMemo(
     () =>
-      thematicMapOverride !== undefined
+      isInteractiveDatasetTooLarge
+        ? null
+        : thematicMapOverride !== undefined
         ? thematicMapOverride
         : getCachedThematicMap(project, thematicMapType),
-    [project, thematicMapOverride, thematicMapType]
+    [isInteractiveDatasetTooLarge, project, thematicMapOverride, thematicMapType]
   );
   const thematicSourceHash = useMemo(
     () => getThematicSourceHash(project, thematicMapType, thematicMap),
     [project, thematicMapType, thematicMap]
   );
   const threeDMap = useMemo(
-    () => threeDThematicMapEngine.build(project),
-    [project]
+    () =>
+      workspaceMode === "3d" && !isInteractiveDatasetTooLarge
+        ? threeDThematicMapEngine.build(project)
+        : null,
+    [isInteractiveDatasetTooLarge, project, workspaceMode]
   );
   const showDebugOverlay =
     process.env.NEXT_PUBLIC_FORMIQ_DEBUG === "true" || project.settings.debug.enabled;
@@ -134,6 +163,7 @@ export default function Map({
   const draftCoordinates = useSelectionStore((state) => state.draftCoordinates);
   const setDraftCoordinates = useSelectionStore((state) => state.setDraftCoordinates);
   const commitRectangle = useSelectionStore((state) => state.commitRectangle);
+  const commitPolygon = useSelectionStore((state) => state.commitPolygon);
   const setSelectionPreview = useSelectionStore((state) => state.setSelectionPreview);
   const commitSelectionUpdate = useSelectionStore((state) => state.commitSelectionUpdate);
   const setViewport = useMapStore((state) => state.setViewport);
@@ -145,6 +175,26 @@ export default function Map({
   const [pmTilesStats, setPMTilesStats] = useState<PMTilesPresentationStats | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
+    const importState = useImportStore.getState();
+    const importIsActive =
+      importState.projectId === project.id &&
+      (importState.phase === "downloading" ||
+        importState.phase === "processing" ||
+        importState.phase === "persisting" ||
+        importState.phase === "rendering");
+    if (importIsActive) return;
+
+    void layerChunkStorage.loadProjectManifests(project.id).then((manifests) => {
+      if (!cancelled) useImportStore.getState().hydrateManifests(project.id, manifests);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [project.id]);
+
+  useEffect(() => {
     if (!mapContainer.current || mapRef.current) return;
 
     const sourceDataHashes = sourceDataHashesRef.current;
@@ -153,7 +203,9 @@ export default function Map({
       style: cartographicStyleEngine.createBlankMapLibreStyle(displaySettings.cartographicTheme),
       center: displaySettings.mapCenter,
       zoom: displaySettings.mapZoom,
+      canvasContextAttributes: { antialias: true },
     });
+    markPerformance("maplibre-created");
 
     mapRef.current = map;
     (window as unknown as { __formiqMap?: MapLibreMap }).__formiqMap = map;
@@ -190,6 +242,8 @@ export default function Map({
     const handleMapLoad = () => {
       isMapStyleReadyRef.current = true;
       syncViewportState();
+      markPerformance("maplibre-loaded");
+      measurePerformance("map-shell-to-maplibre-duration", "map-route-mounted", "maplibre-loaded");
     };
 
     map.on("load", handleMapLoad);
@@ -371,7 +425,9 @@ export default function Map({
         showRoadCasings: displaySettings.showRoadCasings,
       });
 
-      const renderableLayers = layers.filter((layer) => layer.sourceType !== "pmtiles");
+      const renderableLayers = isInteractiveDatasetTooLarge
+        ? []
+        : layers.filter((layer) => layer.sourceType !== "pmtiles");
       const nextLayerIds = new Set(renderableLayers.map((layer) => layer.id));
 
       renderedLayerIdsRef.current.forEach((layerId) => {
@@ -385,40 +441,135 @@ export default function Map({
         syncGISLayer(map, layer, style, suppressedCategories, sourceDataHashesRef.current);
         renderedLayerIdsRef.current.add(layer.id);
       });
+      markPerformance("project-layers-ready");
+      measurePerformance("project-layers-duration", "maplibre-loaded", "project-layers-ready");
+    };
+
+    let frameId: number | null = null;
+    const scheduleLayerSync = () => {
+      frameId = window.requestAnimationFrame(() => {
+        frameId = null;
+        syncLayers();
+      });
     };
 
     if (isMapStyleReadyRef.current || map.isStyleLoaded()) {
-      syncLayers();
-      return;
+      scheduleLayerSync();
+    } else {
+      map.once("load", scheduleLayerSync);
     }
 
-    map.once("load", syncLayers);
-  }, [layers, displaySettings, thematicMapType, workspaceMode]);
+    return () => {
+      map.off("load", scheduleLayerSync);
+      if (frameId !== null) window.cancelAnimationFrame(frameId);
+    };
+  }, [isInteractiveDatasetTooLarge, layers, displaySettings, thematicMapType, workspaceMode]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || chunkProjectId !== project.id) return;
+
+    let cancelled = false;
+    const currentManifestIds = new Set(chunkManifests.map((manifest) => manifest.id));
+
+    const renderChunks = async () => {
+      if (!isMapStyleAvailable(map)) return;
+
+      renderedChunkLayerIdsRef.current.forEach((layerId, chunkId) => {
+        if (!currentManifestIds.has(chunkId)) {
+          removeGISLayer(map, layerId);
+          renderedChunkLayerIdsRef.current.delete(chunkId);
+        }
+      });
+
+      const style = cartographicStyleEngine.compile({
+        themeId: displaySettings.cartographicTheme,
+        roadWidthMode: displaySettings.roadWidthMode,
+        customRoadWidthMultiplier: displaySettings.customRoadWidthMultiplier,
+        showRoadCasings: displaySettings.showRoadCasings,
+      });
+      const suppressedCategories = getSuppressedBaseCategories(thematicMapType, workspaceMode);
+
+      for (const manifest of chunkManifests) {
+        if (cancelled) continue;
+        if (renderedChunkLayerIdsRef.current.has(manifest.id)) {
+          syncChunkLayerPresentation(
+            map,
+            createChunkGISLayer(manifest, undefined, layers),
+            style,
+            suppressedCategories
+          );
+          continue;
+        }
+        const chunk = await layerChunkStorage.loadChunk(manifest.id);
+        if (cancelled || !chunk) continue;
+        await nextAnimationFrame();
+        if (cancelled || !isMapStyleAvailable(map)) return;
+
+        const chunkLayer = createChunkGISLayer(manifest, chunk.geojson, layers);
+        const updateStart = `maplibre-source-update-start:${manifest.id}`;
+        const updateEnd = `maplibre-source-update-end:${manifest.id}`;
+        markPerformance(updateStart);
+        syncGISLayer(map, chunkLayer, style, suppressedCategories, sourceDataHashesRef.current);
+        markPerformance(updateEnd);
+        measurePerformance(`maplibre-source-update:${manifest.id}`, updateStart, updateEnd);
+        renderedChunkLayerIdsRef.current.set(manifest.id, chunkLayer.id);
+        useImportStore.getState().markChunkRendered(manifest.id);
+
+        if (!performance.getEntriesByName("first-interactive-map").length) {
+          markPerformance("first-interactive-map");
+          measurePerformance("first-interactive-map-duration", "territory-import-start", "first-interactive-map");
+        }
+      }
+
+      if (!cancelled && chunkManifests.length > 0) {
+        markPerformance("all-visible-layers-ready");
+        measurePerformance(
+          "all-visible-layers-ready-duration",
+          "territory-import-start",
+          "all-visible-layers-ready"
+        );
+      }
+    };
+
+    const schedule = () => void renderChunks();
+    if (isMapStyleReadyRef.current || map.isStyleLoaded()) schedule();
+    else map.once("load", schedule);
+
+    return () => {
+      cancelled = true;
+      map.off("load", schedule);
+    };
+  }, [chunkManifests, chunkProjectId, displaySettings, layers, project.id, thematicMapType, workspaceMode]);
 
   useEffect(() => {
     const map = mapRef.current;
 
     if (!map) return;
-    if (!isMapStyleAvailable(map)) return;
 
     const syncSelection = () => {
+      if (!isMapStyleAvailable(map)) return;
       syncSelectionLayer(
         map,
         selection,
         draftCoordinates,
         displaySettings.cartographicTheme,
         thematicMapType !== "none",
+        !(activeTerritory?.locked || activeTerritory?.status === "importing"),
         sourceDataHashesRef.current
       );
     };
 
     if (isMapStyleReadyRef.current || map.isStyleLoaded()) {
       syncSelection();
-      return;
+      return undefined;
     }
 
     map.once("load", syncSelection);
-  }, [selection, draftCoordinates, displaySettings.cartographicTheme, thematicMapType]);
+    return () => {
+      map.off("load", syncSelection);
+    };
+  }, [selection, draftCoordinates, displaySettings.cartographicTheme, thematicMapType, activeTerritory?.locked, activeTerritory?.status]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -433,7 +584,7 @@ export default function Map({
         map,
         workspaceMode === "3d" ? null : thematicMap,
         thematicSourceHash,
-        displaySettings.analysisLayerOpacity,
+        analysisLayerOpacity,
         previousThematicMapType !== thematicMapType,
         sourceDataHashesRef.current
       );
@@ -445,7 +596,7 @@ export default function Map({
     }
 
     map.once("load", syncTheme);
-  }, [thematicMap, thematicMapType, thematicSourceHash, displaySettings.analysisLayerOpacity, workspaceMode]);
+  }, [analysisLayerOpacity, thematicMap, thematicMapType, thematicSourceHash, workspaceMode]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -493,7 +644,7 @@ export default function Map({
     }
 
     const handleMouseDown = (event: MapMouseEvent) => {
-      if (mode !== "rectangle") return;
+      if (mode !== "rectangle" || activeTerritory?.locked || activeTerritory?.status === "importing") return;
 
       event.preventDefault();
       map.dragPan.disable();
@@ -504,7 +655,7 @@ export default function Map({
     };
 
     const handleSelectionDragStart = (event: MapMouseEvent) => {
-      if (mode !== "none" || measurementMode !== "none" || !selection) {
+      if (mode !== "none" || measurementMode !== "none" || !selection || activeTerritory?.locked || activeTerritory?.status === "importing") {
         return;
       }
 
@@ -582,6 +733,12 @@ export default function Map({
       setDraftCoordinates([...useSelectionStore.getState().draftCoordinates, nextPoint]);
     };
 
+    const handleDoubleClick = (event: MapMouseEvent) => {
+      if (mode !== "polygon") return;
+      event.preventDefault();
+      if (useSelectionStore.getState().draftCoordinates.length >= 3) commitPolygon();
+    };
+
     const handleObjectSelection = (event: MapMouseEvent) => {
       if (mode !== "none" || measurementMode !== "none") {
         return;
@@ -595,6 +752,7 @@ export default function Map({
     map.on("mousemove", handleMouseMove);
     map.on("mouseup", handleMouseUp);
     map.on("click", handleClick);
+    map.on("dblclick", handleDoubleClick);
     map.on("click", handleObjectSelection);
 
     return () => {
@@ -603,6 +761,7 @@ export default function Map({
       map.off("mousemove", handleMouseMove);
       map.off("mouseup", handleMouseUp);
       map.off("click", handleClick);
+      map.off("dblclick", handleDoubleClick);
       map.off("click", handleObjectSelection);
       map.dragPan.enable();
       map.doubleClickZoom.enable();
@@ -611,11 +770,14 @@ export default function Map({
   }, [
     addMeasurementPoint,
     commitRectangle,
+    commitPolygon,
     commitSelectionUpdate,
     measurementMode,
     mode,
     project,
     selection,
+    activeTerritory?.locked,
+    activeTerritory?.status,
     setDraftCoordinates,
     setSelectedObject,
     setSelectionPreview,
@@ -633,6 +795,14 @@ export default function Map({
         data-terrain-exaggeration={terrainDiagnostics.exaggeration}
         data-terrain-uses-maplibre="true"
       />
+      {isInteractiveDatasetTooLarge ? (
+        <div className="pointer-events-none absolute left-1/2 top-24 z-20 w-[min(460px,calc(100%-32px))] -translate-x-1/2 rounded-[20px] border border-white/70 bg-white/78 px-5 py-4 text-center backdrop-blur-3xl">
+          <p className="text-sm font-semibold text-[#0F172A]">Интерактивный слой временно отключён</p>
+          <p className="mt-1 text-[13px] leading-5 text-[#64748B]">
+            В проекте {interactiveFeatureCount.toLocaleString("ru-RU")} объектов. Разделите территорию на участки до 50 км², чтобы карта не перегружала устройство.
+          </p>
+        </div>
+      ) : null}
       {showDebugOverlay ? (
         <ThematicDebugOverlay
           activeTheme={thematicMapType}
@@ -674,6 +844,96 @@ function syncGISLayer(
   syncFillLayer(map, sourceId, layer, style, suppressedCategories.has(layer.category));
 }
 
+function createChunkGISLayer(
+  manifest: LayerChunkManifest,
+  data: FeatureCollection<Geometry, GeoJsonProperties> | undefined,
+  layers: GISLayer[]
+): GISLayer {
+  const logicalLayer = layers.find(
+    (layer) => layer.category === manifest.layerType && layer.sourceType !== "pmtiles"
+  );
+  const defaultStyle = DEFAULT_OSM_LAYER_STYLES[manifest.layerType];
+
+  return {
+    id: getChunkLayerId(manifest.id),
+    name: logicalLayer?.name ?? getChunkLayerName(manifest.layerType),
+    visible: logicalLayer?.visible ?? true,
+    opacity: logicalLayer?.opacity ?? defaultStyle.opacity ?? 1,
+    groupId: logicalLayer?.groupId ?? "base",
+    locked: true,
+    sourceType: "fusion",
+    removable: false,
+    order: logicalLayer?.order ?? manifest.sequence,
+    category: manifest.layerType,
+    geometryType: manifest.geometryType,
+    source: {
+      id: manifest.id,
+      name: "FORMIQ layer chunk",
+      format: "geojson",
+    },
+    data,
+    style: logicalLayer?.style ?? defaultStyle,
+  };
+}
+
+function syncChunkLayerPresentation(
+  map: MapLibreMap,
+  layer: GISLayer,
+  style: ReturnType<CartographicStyleEngine["compile"]>,
+  suppressedCategories: Set<GISLayer["category"]>
+): void {
+  const sourceId = getSourceId(layer.id);
+  const suppressed = suppressedCategories.has(layer.category);
+  if (layer.geometryType === "line") {
+    syncLineLayer(map, sourceId, layer, style, suppressed);
+  } else if (layer.geometryType === "point") {
+    syncPointLayer(map, sourceId, layer, suppressed);
+  } else {
+    syncFillLayer(map, sourceId, layer, style, suppressed);
+  }
+}
+
+function getChunkLayerId(chunkId: string): string {
+  return `chunk-${chunkId.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+}
+
+function getChunkLayerName(layerType: LayerChunkManifest["layerType"]): string {
+  const names: Record<LayerChunkManifest["layerType"], string> = {
+    buildings: "Здания",
+    roads: "Дороги",
+    green: "Озеленение",
+    water: "Вода",
+    terrain: "Рельеф",
+    boundaries: "Границы",
+    poi: "POI",
+    transit: "Остановки",
+  };
+  return names[layerType];
+}
+
+function nextAnimationFrame(): Promise<void> {
+  return new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
+}
+
+function getLayerFeatureCount(layer: GISLayer): number {
+  if (!layer.data) return 0;
+  if (isFeatureCollection(layer.data)) return layer.data.features.length;
+
+  const metadataCount = Number(layer.data.metadata.featureCount);
+  if (Number.isFinite(metadataCount) && metadataCount >= 0) return metadataCount;
+
+  return (
+    layer.data.buildings.length +
+    layer.data.roads.length +
+    layer.data.vegetation.length +
+    layer.data.water.length +
+    layer.data.terrain.length +
+    (layer.data.boundaries?.length ?? 0) +
+    (layer.data.poi?.length ?? 0) +
+    (layer.data.transitStops?.length ?? 0)
+  );
+}
+
 function resolveLayerFeatureCollection(
   data: NonNullable<GISLayer["data"]>
 ): FeatureCollection<Geometry, GeoJsonProperties> {
@@ -712,11 +972,30 @@ function syncSelectionLayer(
   draftCoordinates: Position[],
   themeId: CartographicThemeId,
   softenFill: boolean,
+  editable: boolean,
   sourceDataHashes: globalThis.Map<string, string>
 ): void {
   const selectionPaint = cartographicStyleEngine.getSelectionPaint(themeId);
-  const data = createSelectionFeatureCollection(selection, draftCoordinates);
-  syncGeoJsonSource(map, SELECTION_SOURCE_ID, data, sourceDataHashes);
+  const data = createSelectionFeatureCollection(selection, draftCoordinates, { editable });
+  syncGeoJsonSource(map, SELECTION_SOURCE_ID, data, sourceDataHashes, createSelectionSourceHash(data));
+
+  const maskData: FeatureCollection<Geometry> = selection ? {
+    type: "FeatureCollection",
+    features: [{ type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [
+      [[-180, -85], [180, -85], [180, 85], [-180, 85], [-180, -85]],
+      [...(selection.geometry.geometry.coordinates[0] ?? [])].reverse(),
+    ] } }],
+  } : { type: "FeatureCollection", features: [] };
+  syncGeoJsonSource(
+    map,
+    SELECTION_MASK_SOURCE_ID,
+    maskData,
+    sourceDataHashes,
+    createSelectionSourceHash(maskData)
+  );
+  if (!map.getLayer(SELECTION_MASK_LAYER_ID)) {
+    map.addLayer({ id: SELECTION_MASK_LAYER_ID, type: "fill", source: SELECTION_MASK_SOURCE_ID, paint: { "fill-color": "#0F172A", "fill-opacity": 0.24 } });
+  }
 
   if (!map.getLayer(SELECTION_FILL_LAYER_ID)) {
     map.addLayer({
@@ -812,6 +1091,7 @@ function syncThematicLayer(
       paint: {
         "fill-color": ["coalesce", ["get", thematicMap.style.fillColorProperty], "#229ED9"],
         "fill-opacity": thematicMap.style.fillOpacity * analysisLayerOpacity,
+        "fill-antialias": true,
       },
     });
   }
@@ -821,6 +1101,11 @@ function syncThematicLayer(
       id: THEMATIC_LINE_LAYER_ID,
       type: "line",
       source: THEMATIC_SOURCE_ID,
+      filter: ["in", ["geometry-type"], ["literal", ["LineString", "MultiLineString"]]],
+      layout: {
+        "line-cap": "round",
+        "line-join": "round",
+      },
       paint: {
         "line-color": ["coalesce", ["get", thematicMap.style.lineColorProperty], "#1D8CC2"],
         "line-width": thematicMap.style.lineWidth,
@@ -896,7 +1181,7 @@ function removeThematicLayer(map: MapLibreMap): void {
 function syncThreeDThematicMap(
   map: MapLibreMap,
   project: FormiqProjectData,
-  threeDMap: ThreeDRenderableMap,
+  threeDMap: ThreeDRenderableMap | null,
   zoneOpacity: number,
   visible: boolean,
   visualStyle: "gis" | "presentation",
@@ -911,6 +1196,11 @@ function syncThreeDThematicMap(
     setPaintPropertyIfChanged(map, "formiq-basemap", "raster-contrast", presentation && visible ? -0.1 : 0);
     setPaintPropertyIfChanged(map, "formiq-basemap", "raster-brightness-min", presentation && visible ? 0.72 : 0);
     setPaintPropertyIfChanged(map, "formiq-basemap", "raster-brightness-max", 1);
+  }
+
+  if (!visible || !threeDMap) {
+    removeThreeDThematicMap(map);
+    return;
   }
 
   syncGeoJsonSource(map, THREE_D_PRESENTATION_WASH_SOURCE_ID, createPresentationWashGeoJson(), sourceDataHashes);
@@ -1120,6 +1410,35 @@ function syncThreeDThematicMap(
   map.triggerRepaint();
 }
 
+function removeThreeDThematicMap(map: MapLibreMap): void {
+  [
+    THREE_D_PRESENTATION_WASH_LAYER_ID,
+    THREE_D_ZONES_LAYER_ID,
+    THREE_D_ZONE_OUTLINE_LAYER_ID,
+    THREE_D_ROUTES_LAYER_ID,
+    THREE_D_TERRITORY_BOUNDARY_LAYER_ID,
+    THREE_D_BUILDINGS_LAYER_ID,
+    THREE_D_BUILDING_OUTLINE_LAYER_ID,
+    THREE_D_HEIGHT_LABELS_LAYER_ID,
+    THREE_D_POI_LAYER_ID,
+    THREE_D_TERRAIN_LAYER_ID,
+  ].forEach((layerId) => {
+    if (map.getLayer(layerId)) map.removeLayer(layerId);
+  });
+
+  [
+    THREE_D_PRESENTATION_WASH_SOURCE_ID,
+    THREE_D_BUILDINGS_SOURCE_ID,
+    THREE_D_ZONES_SOURCE_ID,
+    THREE_D_ROUTES_SOURCE_ID,
+    THREE_D_POI_SOURCE_ID,
+    THREE_D_TERRAIN_SOURCE_ID,
+    THREE_D_TERRITORY_BOUNDARY_SOURCE_ID,
+  ].forEach((sourceId) => {
+    if (map.getSource(sourceId)) map.removeSource(sourceId);
+  });
+}
+
 function syncMapLibreTerrain(
   map: MapLibreMap,
   project: FormiqProjectData,
@@ -1171,7 +1490,7 @@ function getMapLibreTerrainSourceId(source: TerrainSourceId): string {
 
 function getTerrainDiagnostics(
   project: FormiqProjectData,
-  threeDMap: ThreeDRenderableMap,
+  threeDMap: ThreeDRenderableMap | null,
   isThreeDMode: boolean
 ) {
   const terrainSettings = project.settings.threeD.terrain;
@@ -1186,7 +1505,7 @@ function getTerrainDiagnostics(
     enabled: String(enabled),
     source: effectiveTerrainSource,
     requestedSource: terrainSettings.source,
-    sampleCount: String(threeDMap.terrainSummary?.sampleCount ?? 0),
+    sampleCount: String(threeDMap?.terrainSummary?.sampleCount ?? 0),
     exaggeration: String(terrainSettings.exaggeration),
   };
 }
@@ -1364,7 +1683,22 @@ function areMapLibreValuesEqual(left: unknown, right: unknown): boolean {
 }
 
 function createGeoJsonSourceHash(data: FeatureCollection<Geometry, GeoJsonProperties>): string {
-  return JSON.stringify(data);
+  const features = data.features;
+  if (features.length === 0) return "empty";
+
+  const sampleIndexes = Array.from(
+    new Set([0, Math.floor(features.length / 2), features.length - 1])
+  );
+  const sample = sampleIndexes.map((index) => {
+    const feature = features[index];
+    return [
+      feature?.id ?? feature?.properties?.id ?? index,
+      feature?.geometry.type ?? "unknown",
+      feature?.properties?.updatedAt ?? feature?.properties?.importedAt ?? "",
+    ].join(":");
+  });
+
+  return `${features.length}|${sample.join("|")}`;
 }
 
 function getGeoJsonSourcePerformanceOptions(
@@ -1406,16 +1740,7 @@ function createRenderableThematicGeoJson(
   thematicMap: ThematicMapDefinition,
   sourceHash: string
 ): FeatureCollection<Geometry, GeoJsonProperties> {
-  return {
-    ...thematicMap.geojson,
-    features: thematicMap.geojson.features.map((feature) => ({
-      ...feature,
-      properties: {
-        ...(feature.properties ?? {}),
-        sourceHash,
-      },
-    })),
-  };
+  return prepareThematicGeoJsonForRendering(thematicMap.geojson, sourceHash);
 }
 
 function getThematicSourceHash(
@@ -2076,4 +2401,17 @@ function getSuppressedBaseCategories(
   }
 
   return new Set();
+}
+
+function markPerformance(name: string): void {
+  if (typeof performance === "undefined") return;
+  performance.clearMarks(name);
+  performance.mark(name);
+}
+
+function measurePerformance(name: string, startMark: string, endMark: string): void {
+  if (typeof performance === "undefined") return;
+  if (!performance.getEntriesByName(startMark).length || !performance.getEntriesByName(endMark).length) return;
+  performance.clearMeasures(name);
+  performance.measure(name, startMark, endMark);
 }
