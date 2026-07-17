@@ -75,12 +75,7 @@ const exportEngine = createDefaultExportEngine();
 const analysisEngine = new AnalysisEngine();
 const thematicMapEngine = new ThematicMapEngine();
 const sheetWidth = 1120;
-// Presentation maps need a deliberate amount of city context, but the
-// viewport must still be fitted to the selected territory.  Using the full
-// imported entity bounds here lets a long road or a large source bbox shrink
-// the territory to a tiny island on the sheet.  The renderer now uses this
-// ratio around the active territory and clips distant context naturally.
-const mapContextPaddingRatio = 0.24;
+const mapContextPaddingRatio = 0.12;
 const paperSizes: Record<PaperFormat, { width: number; height: number }> = {
   A4: { width: 297, height: 210 },
   A3: { width: 420, height: 297 },
@@ -643,9 +638,9 @@ function getSheetLayout(paper: { width: number; height: number }, marginMm: numb
     margin,
     mapBox: {
       x: margin + 26,
-      y: margin + 138,
-      width: width - margin * 2 - 72,
-      height: height - margin * 2 - 190,
+      y: margin + 158,
+      width: width - margin * 2 - 260,
+      height: height - margin * 2 - 264,
     },
   };
 }
@@ -659,10 +654,7 @@ function createTerritoryMap(project: FormiqProjectData, box: { x: number; y: num
     return createNoDataMapMessage(box, "Не задана активная территория или её географические границы.", requirement);
   }
 
-  // Keep the viewport anchored to the selected territory.  Context entities
-  // outside this controlled extent are still present in the source project,
-  // but are clipped from the sheet instead of determining its scale.
-  const bounds = expandPreviewBounds(rawBounds, mapContextPaddingRatio);
+  const bounds = expandPreviewBounds(unionBounds(rawBounds, getEntityBounds(entities)), mapContextPaddingRatio);
   const territoryPath = territoryGeometryToSvgPath(territory, bounds, box);
   const thematicColors = new Map((thematicMap?.geojson.features ?? []).map((feature) => [String(feature.id ?? feature.properties?.id), String(feature.properties?.renderColor ?? "#94A3B8")]));
   const context = entities.map((entity) => createEntityPath(entity, bounds, box, getContextEntityColor(entity), false)).join("");
@@ -858,6 +850,16 @@ function expandPreviewBounds(bounds: BoundingBox, ratio: number): BoundingBox {
     south: bounds.south - latitudePadding,
     east: bounds.east + longitudePadding,
     north: bounds.north + latitudePadding,
+  };
+}
+
+function unionBounds(left: BoundingBox, right: BoundingBox | null): BoundingBox {
+  if (!right) return left;
+  return {
+    west: Math.min(left.west, right.west),
+    south: Math.min(left.south, right.south),
+    east: Math.max(left.east, right.east),
+    north: Math.max(left.north, right.north),
   };
 }
 
