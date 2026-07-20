@@ -10,3 +10,8 @@ export * from "./providers/LocalBuildingsSourceAdapter";
 export * from "./providers/CityGeoJsonSourceAdapter";
 export * from "./providers/WikidataSourceAdapter";
 export * from "./providers/CopernicusDemSourceAdapter";
+export * from "./providers/WfsSourceAdapter";
+export * from "./providers/ArcGisRestSourceAdapter";
+export * from "./providers/CkanSourceAdapter";
+export * from "./providers/StacSourceAdapter";
+export * from "./providers/GeoJsonSourceAdapter";

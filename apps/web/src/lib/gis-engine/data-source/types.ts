@@ -2,6 +2,7 @@ import type { FeatureCollection, GeoJsonProperties, Geometry } from "geojson";
 import type { DataSourceKind } from "@/types/formiq";
 import type { BoundingBox } from "@/types/gis";
 import type { SourceAdapterResult } from "@/lib/gis-engine/fusion/types";
+import type { SourceAdapterRawResult } from "@/lib/gis-engine/fusion/types";
 
 export type DataSourceStatus =
   | "ready"
@@ -17,6 +18,13 @@ export interface DataSourceAuthContext {
   apiKey?: string;
   token?: string;
   endpoint?: string;
+}
+
+export interface AutomationPolicy {
+  allowed: boolean;
+  method?: "api" | "browser" | "download" | "manual";
+  requiresReview: boolean;
+  termsReference?: string;
 }
 
 export interface DataSourceFetchContext {
@@ -57,10 +65,14 @@ export interface IDataSource {
   supportsBBox: boolean;
   supportsTiles: boolean;
   cache: DataSourceCachePolicy;
+  license?: string;
+  automationPolicy?: AutomationPolicy;
   authenticate(context?: DataSourceAuthContext): Promise<DataSourceStatus>;
   healthCheck(): Promise<DataSourceHealth>;
   fetch(context: DataSourceFetchContext): Promise<DataSourceResult>;
   import(context: DataSourceFetchContext): Promise<DataSourceResult>;
+  /** Optional raw boundary used by Data Hub before provider normalization. */
+  fetchRaw?(context: DataSourceFetchContext): Promise<SourceAdapterRawResult | null>;
   clearCache?(): Promise<void> | void;
 }
 

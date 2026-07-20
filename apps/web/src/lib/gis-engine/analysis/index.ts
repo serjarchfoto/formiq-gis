@@ -1,5 +1,7 @@
 export * from "./AnalysisEngine";
 export * from "./AnalysisRegistry";
+export * from "./AnalysisRequirementsRegistry";
+export * from "./DataHubAnalysisContextAdapter";
 export * from "./types";
 export * from "./calculators/AreaCalculator";
 export * from "./calculators/BuildingCalculator";

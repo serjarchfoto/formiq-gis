@@ -24,6 +24,7 @@ import { SourceManager } from "./SourceManager";
 import type { SourceLoadOptions } from "./SourceManager";
 import type {
   DataFusionResult,
+  FusionCollectionResult,
   SourceAdapterResult,
   SourceBuildingFeature,
   SourceFeature,
@@ -85,8 +86,33 @@ export class DataFusionEngine {
     sourceStates = this.sourceManager?.getStates() ?? [],
     dataSources = sourceStates.map(toProjectDataSource)
   ): DataFusionResult {
+    const fusion = this.fuseCollections(sourceResults);
+    const layers = createLayersFromCollections(
+      fusion.collections,
+      bounds
+    );
+    const result: DataFusionResult = {
+      bounds,
+      layers,
+      collections: fusion.collections,
+      sourceStates,
+      dataSources,
+      statistics: fusion.statistics,
+    };
+
+    return result;
+  }
+
+  /**
+   * Runs the existing merge, priority and semantic rules without creating
+   * GISLayer objects, project state, analysis caches or thematic maps.
+   */
+  fuseCollections(sourceResults: SourceAdapterResult[]): FusionCollectionResult {
     const inputFeatureCount = sourceResults.reduce((total, result) => total + result.features.length, 0);
-    const buildings = this.mergeBuildings(sourceResults);
+    const buildingCandidateGroups = groupBuildingCandidates(sourceResults.flatMap((result) =>
+      result.features.filter((feature): feature is SourceBuildingFeature => feature.kind === "building")
+    ));
+    const buildings = this.mergeBuildings(buildingCandidateGroups);
     const roads = this.mergeRoads(sourceResults);
     const vegetation = this.mergeVegetation(sourceResults);
     const water = this.mergeWater(sourceResults);
@@ -94,49 +120,19 @@ export class DataFusionEngine {
     const boundaries = this.mergeBoundaries(sourceResults);
     const poi = this.mergePoi(sourceResults);
     const transitStops = this.mergeTransitStops(sourceResults);
-    const semanticCollections = this.applySemantics({
-      buildings,
-      roads,
-      vegetation,
-      water,
-      terrain,
-    });
-    const layers = createLayersFromCollections(
-      {
-        ...semanticCollections,
-        boundaries,
-        poi,
-        transitStops,
-      },
-      bounds
-    );
-    const fusedFeatureCount =
-      semanticCollections.buildings.length +
-      semanticCollections.roads.length +
-      semanticCollections.vegetation.length +
-      semanticCollections.water.length +
-      semanticCollections.terrain.length +
-      boundaries.length +
-      poi.length +
-      transitStops.length;
-    const result: DataFusionResult = {
-      bounds,
-      layers,
-      collections: {
-        ...semanticCollections,
-        boundaries,
-        poi,
-        transitStops,
-      },
-      sourceStates,
-      dataSources,
+    const semanticCollections = this.applySemantics({ buildings, roads, vegetation, water, terrain });
+    const collections = { ...semanticCollections, boundaries, poi, transitStops };
+    const fusedFeatureCount = Object.values(collections).reduce((total, collection) => total + collection.length, 0);
+
+    return {
+      collections,
+      buildingCandidateGroups,
       statistics: {
         inputFeatureCount,
         fusedFeatureCount,
         duplicatesCollapsed: Math.max(inputFeatureCount - fusedFeatureCount, 0),
         derivedAttributes: semanticCollections.buildings.reduce(
-          (count, building) =>
-            count +
+          (count, building) => count +
             (building.heightFromLevels !== null ? 1 : 0) +
             (building.volume !== null ? 1 : 0) +
             (building.relativeHeight !== null && building.relativeHeight === building.heightFromLevels ? 1 : 0),
@@ -144,8 +140,6 @@ export class DataFusionEngine {
         ),
       },
     };
-
-    return result;
   }
 
   invalidate(bounds?: BoundingBox): void {
@@ -158,23 +152,7 @@ export class DataFusionEngine {
     this.fusionCache.delete(this.createCacheKey(bounds));
   }
 
-  private mergeBuildings(results: SourceAdapterResult[]): FormiqBuilding[] {
-    const candidates = results.flatMap((result) =>
-      result.features.filter((feature): feature is SourceBuildingFeature => feature.kind === "building")
-    );
-    const groups: SourceBuildingFeature[][] = [];
-
-    candidates.forEach((candidate) => {
-      const existingGroup = groups.find((group) => areBuildingsRelated(group[0], candidate));
-
-      if (existingGroup) {
-        existingGroup.push(candidate);
-        return;
-      }
-
-      groups.push([candidate]);
-    });
-
+  private mergeBuildings(groups: SourceBuildingFeature[][]): FormiqBuilding[] {
     return groups
       .map((group, index) => this.mergeBuildingGroup(group, index))
       .filter((building): building is FormiqBuilding => Boolean(building));
@@ -609,6 +587,17 @@ export class DataFusionEngine {
   private createCacheKey(bounds: BoundingBox): string {
     return `fusion:${bounds.west}:${bounds.south}:${bounds.east}:${bounds.north}`;
   }
+}
+
+/** Shared domain-specific duplicate rule used by legacy fusion and Data Hub. */
+export function groupBuildingCandidates(candidates: SourceBuildingFeature[]): SourceBuildingFeature[][] {
+  const groups: SourceBuildingFeature[][] = [];
+  candidates.forEach((candidate) => {
+    const existingGroup = groups.find((group) => areBuildingsRelated(group[0], candidate));
+    if (existingGroup) existingGroup.push(candidate);
+    else groups.push([candidate]);
+  });
+  return groups;
 }
 
 function createLayersFromCollections(

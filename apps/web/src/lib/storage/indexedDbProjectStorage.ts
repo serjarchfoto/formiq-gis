@@ -2,12 +2,19 @@ import { normalizeFormiqProject } from "@/lib/gis-engine/projectBuilder";
 import type { LayerChunkManifest, LayerChunkRecord } from "@/lib/gis-engine/chunks";
 import type { FormiqProjectData } from "@/types/formiq";
 
-const DATABASE_NAME = "formiq-workspace";
-const DATABASE_VERSION = 2;
-const PROJECT_STORE = "projects";
-const META_STORE = "metadata";
-const LAYER_CHUNK_STORE = "layer-chunks";
-const LAYER_CHUNK_MANIFEST_STORE = "layer-chunk-manifests";
+export const FORMIQ_DATABASE_NAME = "formiq-workspace";
+export const FORMIQ_DATABASE_VERSION = 4;
+export const PROJECT_STORE = "projects";
+export const META_STORE = "metadata";
+export const LAYER_CHUNK_STORE = "layer-chunks";
+export const LAYER_CHUNK_MANIFEST_STORE = "layer-chunk-manifests";
+export const DATA_HUB_STORES = {
+  RAW_RECORDS: "dataHubRawRecords",
+  INGESTION_RUNS: "dataHubIngestionRuns",
+  CANONICAL_SNAPSHOTS: "dataHubCanonicalSnapshots",
+  QUALITY_REPORTS: "dataHubQualityReports",
+  AGENT_JOBS: "dataHubAgentJobs",
+} as const;
 const ACTIVE_PROJECT_KEY = "active-project-id";
 let databasePromise: Promise<IDBDatabase> | null = null;
 
@@ -103,6 +110,7 @@ export class IndexedDbProjectStorage {
     const projectsBeforeDelete = await readAllValues<FormiqProjectData>(database, PROJECT_STORE);
     const projectsAfterDelete = projectsBeforeDelete.filter((project) => project.id !== projectId);
     await deleteLayerChunksForProject(database, projectId);
+    await deleteDataHubRecordsForProject(database, projectId);
 
     if (activeProjectId === projectId) {
       const nextActiveProject = projectsAfterDelete
@@ -202,8 +210,8 @@ function deleteProjectAndUpdateActiveProjectId(
   });
 }
 
-function canUseIndexedDb(): boolean {
-  return typeof window !== "undefined" && "indexedDB" in window;
+export function canUseIndexedDb(): boolean {
+  return typeof indexedDB !== "undefined";
 }
 
 function getDatabase(): Promise<IDBDatabase> {
@@ -217,9 +225,20 @@ function getDatabase(): Promise<IDBDatabase> {
   return databasePromise;
 }
 
+export function getFormiqDatabase(): Promise<IDBDatabase> {
+  return getDatabase();
+}
+
+export async function closeFormiqDatabaseConnection(): Promise<void> {
+  const connection = databasePromise;
+  databasePromise = null;
+  if (!connection) return;
+  await connection.then((database) => database.close()).catch(() => undefined);
+}
+
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
+    const request = indexedDB.open(FORMIQ_DATABASE_NAME, FORMIQ_DATABASE_VERSION);
 
     request.onupgradeneeded = () => {
       const database = request.result;
@@ -244,6 +263,8 @@ function openDatabase(): Promise<IDBDatabase> {
         manifests.createIndex("projectId", "projectId", { unique: false });
         manifests.createIndex("project-layer", ["projectId", "layerType"], { unique: false });
       }
+
+      createDataHubStores(database);
     };
 
     request.onsuccess = () => {
@@ -256,6 +277,44 @@ function openDatabase(): Promise<IDBDatabase> {
     };
     request.onerror = () => reject(request.error);
   });
+}
+
+function createDataHubStores(database: IDBDatabase): void {
+  if (!database.objectStoreNames.contains(DATA_HUB_STORES.RAW_RECORDS)) {
+    const store = database.createObjectStore(DATA_HUB_STORES.RAW_RECORDS, { keyPath: "id" });
+    ["ingestionRunId", "projectId", "territoryId", "sourceId", "domain", "receivedAt"].forEach((index) =>
+      store.createIndex(index, index, { unique: false })
+    );
+  }
+
+  if (!database.objectStoreNames.contains(DATA_HUB_STORES.INGESTION_RUNS)) {
+    const store = database.createObjectStore(DATA_HUB_STORES.INGESTION_RUNS, { keyPath: "id" });
+    ["projectId", "territoryId", "status", "startedAt"].forEach((index) =>
+      store.createIndex(index, index, { unique: false })
+    );
+  }
+
+  if (!database.objectStoreNames.contains(DATA_HUB_STORES.CANONICAL_SNAPSHOTS)) {
+    const store = database.createObjectStore(DATA_HUB_STORES.CANONICAL_SNAPSHOTS, { keyPath: "id" });
+    ["projectId", "territoryId", "createdAt", "version"].forEach((index) =>
+      store.createIndex(index, index, { unique: false })
+    );
+    store.createIndex("project-territory-version", ["projectId", "territoryId", "version"], { unique: true });
+  }
+
+  if (!database.objectStoreNames.contains(DATA_HUB_STORES.QUALITY_REPORTS)) {
+    const store = database.createObjectStore(DATA_HUB_STORES.QUALITY_REPORTS, { keyPath: "id" });
+    ["projectId", "territoryId", "canonicalSnapshotId", "createdAt"].forEach((index) =>
+      store.createIndex(index, index, { unique: false })
+    );
+  }
+
+  if (!database.objectStoreNames.contains(DATA_HUB_STORES.AGENT_JOBS)) {
+    const store = database.createObjectStore(DATA_HUB_STORES.AGENT_JOBS, { keyPath: "id" });
+    ["projectId", "territoryId", "status", "createdAt", "updatedAt"].forEach((index) =>
+      store.createIndex(index, index, { unique: false })
+    );
+  }
 }
 
 export function prepareProjectForStorage(project: FormiqProjectData): FormiqProjectData {
@@ -286,7 +345,7 @@ function measurePerformance(name: string, startMark: string, endMark: string): v
   performance.measure(name, startMark, endMark);
 }
 
-function readValue<T>(database: IDBDatabase, storeName: string, key: string): Promise<T | null> {
+export function readValue<T>(database: IDBDatabase, storeName: string, key: IDBValidKey): Promise<T | null> {
   return new Promise((resolve, reject) => {
     const transaction = database.transaction(storeName, "readonly");
     const store = transaction.objectStore(storeName);
@@ -310,7 +369,7 @@ function readValue<T>(database: IDBDatabase, storeName: string, key: string): Pr
   });
 }
 
-function readAllValues<T>(database: IDBDatabase, storeName: string): Promise<T[]> {
+export function readAllValues<T>(database: IDBDatabase, storeName: string): Promise<T[]> {
   return new Promise((resolve, reject) => {
     const transaction = database.transaction(storeName, "readonly");
     const store = transaction.objectStore(storeName);
@@ -321,7 +380,7 @@ function readAllValues<T>(database: IDBDatabase, storeName: string): Promise<T[]
   });
 }
 
-function writeValue(
+export function writeValue(
   database: IDBDatabase,
   storeName: string,
   value: unknown
@@ -333,6 +392,31 @@ function writeValue(
 
     request.onsuccess = () => resolve();
     request.onerror = () => reject(request.error);
+  });
+}
+
+export function addValue(database: IDBDatabase, storeName: string, value: unknown): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction(storeName, "readwrite");
+    const request = transaction.objectStore(storeName).add(value);
+    request.onerror = () => reject(request.error ?? new Error(`Unable to add value to "${storeName}".`));
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error ?? new Error(`Unable to write "${storeName}".`));
+    transaction.onabort = () => reject(transaction.error ?? new Error(`Write to "${storeName}" was aborted.`));
+  });
+}
+
+export function addValues(database: IDBDatabase, storeName: string, values: unknown[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction(storeName, "readwrite");
+    const store = transaction.objectStore(storeName);
+    values.forEach((value) => {
+      const request = store.add(value);
+      request.onerror = () => reject(request.error ?? new Error(`Unable to add value to "${storeName}".`));
+    });
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error ?? new Error(`Unable to write "${storeName}".`));
+    transaction.onabort = () => reject(transaction.error ?? new Error(`Write to "${storeName}" was aborted.`));
   });
 }
 
@@ -353,7 +437,7 @@ function writeLayerChunk(
   });
 }
 
-function readAllByIndex<T>(
+export function readAllByIndex<T>(
   database: IDBDatabase,
   storeName: string,
   indexName: string,
@@ -367,6 +451,21 @@ function readAllByIndex<T>(
   });
 }
 
+export function deleteAllByIndex(
+  database: IDBDatabase,
+  storeName: string,
+  indexName: string,
+  key: IDBValidKey
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction(storeName, "readwrite");
+    deleteByIndex(transaction.objectStore(storeName), indexName, key);
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+    transaction.onabort = () => reject(transaction.error);
+  });
+}
+
 function deleteLayerChunksForProject(database: IDBDatabase, projectId: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const transaction = database.transaction(
@@ -377,6 +476,19 @@ function deleteLayerChunksForProject(database: IDBDatabase, projectId: string): 
     deleteByIndex(transaction.objectStore(LAYER_CHUNK_MANIFEST_STORE), "projectId", projectId);
     transaction.oncomplete = () => resolve();
     transaction.onerror = () => reject(transaction.error);
+  });
+}
+
+function deleteDataHubRecordsForProject(database: IDBDatabase, projectId: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const storeNames = Object.values(DATA_HUB_STORES);
+    const transaction = database.transaction(storeNames, "readwrite");
+    storeNames.forEach((storeName) =>
+      deleteByIndex(transaction.objectStore(storeName), "projectId", projectId)
+    );
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+    transaction.onabort = () => reject(transaction.error);
   });
 }
 

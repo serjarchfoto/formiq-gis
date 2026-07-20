@@ -9,6 +9,7 @@ export function getImportSourceLabel(source: ImportSourceId): string {
   return DATA_SOURCE_LABELS[source];
 }
 
+/** @deprecated Use ImportPipeline/DataHub directly; retained for old callers. */
 export async function importOSMLayersByBoundingBox(bounds: BoundingBox): Promise<GISLayer[]> {
   const result = await importUnifiedContextByBoundingBox(bounds, { sources: ["osm"] });
   return result.layers;

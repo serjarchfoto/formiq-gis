@@ -114,6 +114,11 @@ export type SourceAdapterWorkerPayload =
       format: "terrain";
       features: Array<Feature<Extract<Geometry, { type: "Point" }>, { elevation?: unknown }>>;
       demType: string;
+    }
+  | {
+      format: "catalog";
+      catalogType: "ckan" | "stac";
+      records: unknown[];
     };
 
 export interface SourceAdapterRawResult {
@@ -133,6 +138,7 @@ export interface SourceAdapter {
   version: string;
   fetch(context: SourceAdapterContext): Promise<SourceAdapterResult>;
   fetchRaw?(context: SourceAdapterContext): Promise<SourceAdapterRawResult>;
+  describeCapabilities?(): Promise<Record<string, unknown>>;
 }
 
 export interface SourceCacheEntry {
@@ -169,6 +175,13 @@ export interface DataFusionResult {
     duplicatesCollapsed: number;
     derivedAttributes: number;
   };
+}
+
+/** Domain output of the existing fusion rules before any UI/render projection is built. */
+export interface FusionCollectionResult {
+  collections: DataFusionResult["collections"];
+  buildingCandidateGroups: SourceBuildingFeature[][];
+  statistics: DataFusionResult["statistics"];
 }
 
 export interface FeatureCollectionBundle {

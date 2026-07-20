@@ -488,6 +488,7 @@ export function createProjectOperation(
   };
 }
 
+/** @deprecated New imports project CanonicalSnapshot through CanonicalProjectProjection. */
 export function buildFormiqProjectFromFusionResult(
   fusionResult: DataFusionResult,
   previousProject = createEmptyFormiqProject()

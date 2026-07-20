@@ -6,9 +6,26 @@ import type {
   LandscapeCategory,
   RoadType,
 } from "@/types/formiq";
+import type { DataHubAnalysisContext } from "@/lib/gis-engine/data-hub";
 
 export interface AnalysisContext {
+  analysisId: string;
+  /** Compatibility projection built only from the selected canonical context. */
   project: FormiqProjectData;
+  dataHub: DataHubAnalysisContext;
+  source: "canonical" | "legacy";
+  warnings: string[];
+}
+
+export type AnalysisContextState = "ready" | "degraded" | "missing_required_data";
+
+export interface AnalysisExecutionResult {
+  analysisId: string;
+  result: AnalysisResult;
+  state: AnalysisContextState;
+  warnings: string[];
+  snapshotId: string;
+  source: "canonical" | "legacy";
 }
 
 export interface ThematicRenderItem {
@@ -104,5 +121,5 @@ export type AnalysisSectionKey = keyof AnalysisResult;
 
 export interface AnalysisCalculator<K extends AnalysisSectionKey = AnalysisSectionKey> {
   key: K;
-  calculate: (context: AnalysisContext, partialResult: Partial<AnalysisResult>) => AnalysisResult[K];
+  calculate: (context: Pick<AnalysisContext, "project">, partialResult: Partial<AnalysisResult>) => AnalysisResult[K];
 }

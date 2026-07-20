@@ -1,4 +1,3 @@
-export * from "./gis-engine/osmNormalizer";
 export * from "./gis-engine/formiqToGeoJson";
 export * from "./gis-engine/projectBuilder";
 export * from "./gis-engine/semantic";
@@ -6,6 +5,7 @@ export * from "./gis-engine/analysis";
 export * from "./gis-engine/thematic";
 export * from "./gis-engine/fusion";
 export * from "./gis-engine/data-source";
+export * from "./gis-engine/data-hub";
 export * from "./gis-engine/cartographic-style";
 export * from "./gis-engine/layer-system";
 export * from "./gis-engine/geometry/clipToTerritory";

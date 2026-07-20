@@ -1,7 +1,7 @@
 import type { Feature, GeoJsonProperties, Geometry, Position } from "geojson";
 import type { BoundingBox, GISLayerGeometryType } from "@/types/gis";
 import type { SourceFeature } from "@/lib/gis-engine/fusion/types";
-import { normalizeOverpassElement } from "@/lib/gis-engine/fusion/providers/OSMSourceAdapter";
+import { normalizeOsmElementToLegacySourceFeatures } from "@/lib/gis-engine/data-hub/normalizers";
 import {
   normalizeBuildingFeature,
   normalizeGeneralGeoJsonFeature,
@@ -96,7 +96,7 @@ function normalizeWorkerPayload(request: ChunkProcessingRequest): SourceFeature[
     const features: SourceFeature[] = [];
     for (const response of payload.responses) {
       for (const element of response.elements) {
-        features.push(...normalizeOverpassElement(element));
+        features.push(...normalizeOsmElementToLegacySourceFeatures(element));
       }
     }
     return features;
@@ -115,6 +115,11 @@ function normalizeWorkerPayload(request: ChunkProcessingRequest): SourceFeature[
       slope: null,
       tags: { source: "open-topography", demType: payload.demType },
     }));
+  }
+
+  if (payload.format === "catalog") {
+    // CKAN/STAC catalog records are metadata, not vector geometry.
+    return [];
   }
 
   const normalize = payload.normalization === "building"

@@ -16,6 +16,11 @@ const descriptions: Record<ImportSourceId, string> = {
   "copernicus-dem": "Рельеф",
   "sentinel-2": "Покрытие земли",
   "open-weather": "Погодный слой",
+  wfs: "Официальные векторные слои",
+  "arcgis-rest": "ArcGIS Feature Service",
+  ckan: "Каталог CKAN",
+  stac: "Каталог STAC",
+  file: "GeoJSON файл",
 };
 
 export default function DataSourcesPanel() {

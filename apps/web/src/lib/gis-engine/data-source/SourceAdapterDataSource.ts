@@ -9,6 +9,7 @@ import type {
   DataSourceHealth,
   DataSourceMode,
   DataSourceResult,
+  AutomationPolicy,
   DataSourceStatus,
   IDataSource,
 } from "./types";
@@ -19,6 +20,8 @@ interface SourceAdapterDataSourceOptions {
   supportsBBox?: boolean;
   supportsTiles?: boolean;
   cache?: Partial<DataSourceCachePolicy>;
+  license?: string;
+  automationPolicy?: AutomationPolicy;
 }
 
 const DEFAULT_CACHE_POLICY: DataSourceCachePolicy = {
@@ -33,6 +36,8 @@ export class SourceAdapterDataSource implements IDataSource {
   readonly supportsBBox: boolean;
   readonly supportsTiles: boolean;
   readonly cache: DataSourceCachePolicy;
+  readonly license?: string;
+  readonly automationPolicy?: AutomationPolicy;
   status: DataSourceStatus = "not-configured";
 
   constructor(
@@ -49,6 +54,8 @@ export class SourceAdapterDataSource implements IDataSource {
       ...DEFAULT_CACHE_POLICY,
       ...options.cache,
     };
+    this.license = options.license;
+    this.automationPolicy = options.automationPolicy;
   }
 
   async authenticate(): Promise<DataSourceStatus> {
@@ -66,6 +73,11 @@ export class SourceAdapterDataSource implements IDataSource {
 
   async fetch(context: DataSourceFetchContext): Promise<DataSourceResult> {
     return this.import(context);
+  }
+
+  async fetchRaw(context: DataSourceFetchContext) {
+    if (!this.adapter.fetchRaw) return null;
+    return this.adapter.fetchRaw({ bounds: context.bbox, signal: context.signal });
   }
 
   async import(context: DataSourceFetchContext): Promise<DataSourceResult> {

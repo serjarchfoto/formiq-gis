@@ -47,6 +47,14 @@ export type DataSourceKind =
   | "gtfs"
   | "open-weather"
   | "pmtiles"
+  | "wfs"
+  | "arcgis-rest"
+  | "ckan"
+  | "stac"
+  | "file"
+  | "wms"
+  | "wmts"
+  | "raster"
   | "manual";
 export type ImportSourceId =
   | "osm"
@@ -58,7 +66,12 @@ export type ImportSourceId =
   | "gtfs"
   | "copernicus-dem"
   | "sentinel-2"
-  | "open-weather";
+  | "open-weather"
+  | "wfs"
+  | "arcgis-rest"
+  | "ckan"
+  | "stac"
+  | "file";
 export type UnifiedFeatureKind =
   | "building"
   | "road"

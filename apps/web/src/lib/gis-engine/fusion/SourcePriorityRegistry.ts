@@ -10,30 +10,33 @@ export interface PrioritizedSource {
 }
 
 /**
- * Central source policy. Adapters are registered separately, so adding a
- * provider does not require changing fusion or analysis calculators.
+ * @deprecated Compatibility facade for SourceManager only. Data Hub ingestion
+ * uses SourcePolicyEngine and never treats this static table as source policy.
  */
 export const SOURCE_PRIORITY_PLAN: Record<SourcePriorityRole, PrioritizedSource[]> = {
+  // Compatibility defaults for SourceManager only. New Data Hub runs use
+  // SourcePolicyEngine, so these roles intentionally do not declare a global
+  // primary source (OSM remains available as a secondary/fallback candidate).
   buildings: [
-    { id: "osm", priority: "primary", enabledByDefault: true },
+    { id: "osm", priority: "secondary", enabledByDefault: true },
     { id: "microsoft-buildings", priority: "secondary", enabledByDefault: true },
     { id: "overture", priority: "secondary", enabledByDefault: true },
     { id: "open-aerial-map", priority: "fallback", enabledByDefault: false },
   ],
   functions: [
-    { id: "osm", priority: "primary", enabledByDefault: true },
+    { id: "osm", priority: "secondary", enabledByDefault: true },
     { id: "wikidata", priority: "secondary", enabledByDefault: true },
     { id: "city-geojson", priority: "secondary", enabledByDefault: true },
     { id: "national-geospatial-portal", priority: "fallback", enabledByDefault: false },
   ],
   poi: [
-    { id: "osm", priority: "primary", enabledByDefault: true },
+    { id: "osm", priority: "secondary", enabledByDefault: true },
     { id: "wikidata", priority: "secondary", enabledByDefault: true },
     { id: "overture", priority: "secondary", enabledByDefault: true },
     { id: "national-geospatial-portal", priority: "fallback", enabledByDefault: false },
   ],
   transport: [
-    { id: "osm", priority: "primary", enabledByDefault: true },
+    { id: "osm", priority: "secondary", enabledByDefault: true },
     { id: "gtfs", priority: "secondary", enabledByDefault: false },
     { id: "national-geospatial-portal", priority: "fallback", enabledByDefault: false },
   ],

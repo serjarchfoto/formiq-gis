@@ -26,6 +26,10 @@ type OSMCategory = Extract<GISLayerCategory, "buildings" | "roads" | "green" | "
 
 const semanticEngine = new SemanticEngine();
 
+/**
+ * @deprecated Legacy presentation-layer normalizer retained for existing callers only.
+ * Data Hub ingestion uses OSMSourceNormalizer and must never import this module.
+ */
 export function normalizeOSMResponseToFormiqLayers(
   response: OverpassResponse,
   bounds: BoundingBox

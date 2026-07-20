@@ -5,9 +5,7 @@ import type { ReactNode } from "react";
 import {
   cancelChunkedTerritoryImport,
   DataSourcesPanel,
-  getBoundingBoxAreaSquareKilometers,
   getImportStageCount,
-  importTerritoryInChunks,
   importUnifiedContextByBoundingBox,
   type ImportProgressEvent,
 } from "@/features/import";
@@ -36,13 +34,10 @@ const text = {
   help: "Справка",
 };
 
-const CHUNKED_IMPORT_AREA_THRESHOLD_SQUARE_KILOMETERS = 12;
-
 export default function TopBar() {
   const project = useProjectStore((state) => state.project);
   const isSaving = useProjectStore((state) => state.isSaving);
-  const syncProjectFromFusion = useProjectStore((state) => state.syncProjectFromFusion);
-  const saveProject = useProjectStore((state) => state.saveProject);
+  const setProject = useProjectStore((state) => state.setProject);
   const setTerritoryStatus = useProjectStore((state) => state.setTerritoryStatus);
   const selection = useSelectionStore((state) => state.selection);
   const activeAnalysisLayerId = useUIStore((state) => state.activeAnalysisLayerId);
@@ -122,34 +117,12 @@ export default function TopBar() {
     setTerritoryStatus("importing", activeTerritory?.id, importRevision);
 
     try {
-      const areaSquareKilometers = getBoundingBoxAreaSquareKilometers(importBounds);
-      if (areaSquareKilometers > CHUNKED_IMPORT_AREA_THRESHOLD_SQUARE_KILOMETERS) {
-        await importTerritoryInChunks({
-          projectId: project.id,
-          bounds: importBounds,
-          sources: enabledSources,
-          onProjectUpdate: async (fusionResult) => {
-            syncProjectFromFusion(fusionResult);
-            // Chunked layers are rendered from IndexedDB, while analysis reads
-            // the project model. Persist the fused model before navigation so
-            // /analysis and a reload see the same imported data.
-            await saveProject();
-          },
-        });
-        setTerritoryStatus("imported", activeTerritory?.id, {
-          ...importRevision,
-          completedAt: new Date().toISOString(),
-        });
-        setStatusMessage(text.done);
-        return;
-      }
-
       await importUnifiedContextByBoundingBox(importBounds, {
         sources: enabledSources,
+        existingProject: project,
         onProgress: (event) => setImportLog((current) => mergeImportLog(current, event)),
-        onProjectUpdate: async (fusionResult) => {
-          syncProjectFromFusion(fusionResult);
-          await saveProject();
+        onProjectUpdate: async (projectedProject) => {
+          await setProject(projectedProject.id, projectedProject);
         },
       });
 

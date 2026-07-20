@@ -5,7 +5,7 @@ import { createDefaultExportEngine, type ExportFormat } from "@/lib";
 import { AnalysisEngine } from "@/lib/gis-engine/analysis";
 import { ThematicMapEngine, type ThematicMapDefinition } from "@/lib/gis-engine/thematic";
 import { getAnalysisExportSelection } from "@/features/analysis";
-import { getBoundingBoxAreaSquareKilometers, importTerritoryInChunks, importUnifiedContextByBoundingBox } from "@/features/import";
+import { importUnifiedContextByBoundingBox } from "@/features/import";
 import { clipProjectToArea } from "@/features/selection/areaService";
 import { buildAnalysisModel, projectScenario } from "@/features/analysis/model";
 import {
@@ -97,8 +97,7 @@ const exportItems: Array<{ id: ExportId; title: string; subtitle: string; color:
 
 export default function ExportPage() {
   const project = useProjectStore((state) => state.project);
-  const syncProjectFromFusion = useProjectStore((state) => state.syncProjectFromFusion);
-  const saveProject = useProjectStore((state) => state.saveProject);
+  const setProject = useProjectStore((state) => state.setProject);
   const completeWorkflowStage = useUIStore((state) => state.completeWorkflowStage);
   const activeAnalysisLayerId = useUIStore((state) => state.activeAnalysisLayerId);
   const activeScenarioId = useUIStore((state) => state.activeScenarioId);
@@ -301,15 +300,13 @@ export default function ExportPage() {
     setIsLoadingMissingData(true);
     setStatus(`Загрузка: ${dataRequirement.source}...`);
     try {
-      const onProjectUpdate = async (fusionResult: Parameters<typeof syncProjectFromFusion>[0]) => {
-        syncProjectFromFusion(fusionResult);
-        await saveProject();
-      };
-      if (getBoundingBoxAreaSquareKilometers(bounds) > 50) {
-        await importTerritoryInChunks({ projectId: project.id, bounds, sources, onProjectUpdate });
-      } else {
-        await importUnifiedContextByBoundingBox(bounds, { sources, onProjectUpdate });
-      }
+      await importUnifiedContextByBoundingBox(bounds, {
+        sources,
+        existingProject: project,
+        onProjectUpdate: async (projectedProject) => {
+          await setProject(projectedProject.id, projectedProject);
+        },
+      });
       setStatus("Данные загружены, аналитика обновлена");
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Не удалось загрузить недостающие данные");

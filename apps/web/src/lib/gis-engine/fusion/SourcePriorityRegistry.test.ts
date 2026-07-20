@@ -20,6 +20,12 @@ describe("SourcePriorityRegistry", () => {
     ]);
   });
 
+  it("does not expose OSM as a global primary for compatibility roles", () => {
+    for (const role of ["buildings", "functions", "poi", "transport"] as const) {
+      expect(getSourcePriorityPlan(role).find((source) => source.id === "osm")?.priority).not.toBe("primary");
+    }
+  });
+
   it("chooses the result with the largest usable collection", () => {
     const result = chooseBestSourceResult([
       { features: [{ id: 1 }] },
